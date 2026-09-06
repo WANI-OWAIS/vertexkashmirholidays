@@ -11,24 +11,28 @@ import { EditableField } from "./EditableField";
 import { ImagePicker } from "./ImagePicker";
 import { ItineraryIcon } from "./icons";
 import { PDF_CONTACT } from "@/lib/pdf/contact";
-import { MEAL_PLAN_LEGEND } from "@/lib/hotelSuppliers/schema";
 import { DEFAULT_ITINERARY_DATA } from "./default-data";
 import { downloadItineraryPdf, type TokenPaymentLink } from "@/lib/itinerary/export-pdf";
 import type { PdfTrustContent } from "@/lib/itinerary/pdfTrustContent";
+import type { PdfSocialLinks } from "@/lib/pdf/contact";
 import { applyLeadFactsToItinerary, type LeadItinerarySeed } from "@/lib/itinerary/lead-defaults";
 import {
   type ItineraryData,
   type ItineraryStatus,
   type ItineraryDay,
+  type ListItem,
+  type CancelTier,
+  type PriceActivityItem,
   DEFAULT_HOTEL_IMAGES,
   genId,
 } from "@/types/itinerary";
 
-type ListKey = "inc" | "exc" | "pay" | "cancel";
+type ListKey = "pay";
 
-// Fixed at 3 for now — the request was "try 3, maybe a 4th if there's room."
-// Bump to 4 once that's been reviewed against the actual page layout.
-const HOTEL_IMAGE_SLOTS = 3;
+// Must match MAX_HIGHLIGHTS in ItineraryPdf.tsx — that's what the PDF export
+// actually renders/truncates to, so the editor enforces the same cap up
+// front rather than silently dropping a 5th+ point only at export time.
+const MAX_HIGHLIGHTS = 4;
 
 /** Structured lead data for the two-way trip-detail sync (lead-linked itineraries). */
 export interface LeadSyncData {
@@ -56,6 +60,21 @@ interface ItineraryEditorProps {
   companyAddress?: string;
   /** Real review-rating + Why Choose Vertex copy for the PDF — see pdfTrustContent.ts. */
   trustContent?: PdfTrustContent;
+  /** Real Instagram/Facebook/YouTube URLs (SiteSettings) — makes the PDF's social icons clickable. */
+  socialLinks?: PdfSocialLinks;
+  /**
+   * Save/status-bump endpoint prefix — defaults to the generic staff itinerary
+   * API. B2B itineraries (see /admin/b2b-itineraries/[id]/page.tsx) pass
+   * "/api/admin/b2b-itineraries" instead, since the generic route's
+   * resolveItineraryAccess() is assignee-gated and B2B requests have no
+   * assignee concept — nothing else about this component changes.
+   */
+  apiBasePath?: string;
+  /**
+   * B2B itineraries have no booking/payment concept yet — suppresses the
+   * token-Payment-Link QR mint on export rather than relying on it to fail.
+   */
+  disableTokenPaymentLink?: boolean;
 }
 
 export function ItineraryEditor({
@@ -69,6 +88,9 @@ export function ItineraryEditor({
   lockCost = false,
   companyAddress,
   trustContent,
+  socialLinks,
+  apiBasePath = "/api/itineraries",
+  disableTokenPaymentLink = false,
 }: ItineraryEditorProps) {
   const router = useRouter();
   const [data, setData] = useState<ItineraryData>(initialData);
@@ -110,6 +132,7 @@ export function ItineraryEditor({
           title: "New Day",
           body: "Describe the day's plan…",
           image: "/itinerary/srinagar.webp",
+          dateLabel: "",
           meta: [
             { id: genId("m"), label: "Meals", value: "Breakfast" },
             { id: genId("m"), label: "Stay", value: "Srinagar" },
@@ -149,10 +172,58 @@ export function ItineraryEditor({
       ),
     }));
 
+  /* ---------- highlights (a meta row's value, comma-joined — same convention
+     the PDF export reads via MAX_HIGHLIGHTS in ItineraryPdf.tsx) ---------- */
+  const parseHighlights = (value: string) =>
+    value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const addHighlightPoint = (dayId: string, metaId: string, currentValue: string) => {
+    const points = parseHighlights(currentValue);
+    if (points.length >= MAX_HIGHLIGHTS) return;
+    updateMeta(dayId, metaId, "value", [...points, "New highlight"].join(", "));
+  };
+
+  const updateHighlightPoint = (
+    dayId: string,
+    metaId: string,
+    currentValue: string,
+    index: number,
+    value: string,
+  ) => {
+    const points = parseHighlights(currentValue);
+    points[index] = value;
+    updateMeta(dayId, metaId, "value", points.join(", "));
+  };
+
+  const removeHighlightPoint = (
+    dayId: string,
+    metaId: string,
+    currentValue: string,
+    index: number,
+  ) => {
+    const points = parseHighlights(currentValue).filter((_, i) => i !== index);
+    updateMeta(dayId, metaId, "value", points.join(", "));
+  };
+
   /* ---------- hotels ---------- */
   const updateHotel = (
     hid: string,
-    field: "destination" | "hotelDetails" | "nights" | "roomType" | "rooms" | "mealType",
+    field:
+      | "destination"
+      | "hotelDetails"
+      | "nights"
+      | "roomType"
+      | "rooms"
+      | "mealType"
+      | "image"
+      | "extraBed"
+      | "childWithBed"
+      | "hotelAlt"
+      | "checkIn"
+      | "checkOut",
     value: string,
   ) =>
     setData((p) => ({
@@ -168,11 +239,17 @@ export function ItineraryEditor({
         {
           id: genId("h"),
           destination: "New Destination (1N)",
-          hotelDetails: "Hotel name / Similar",
+          hotelDetails: "Hotel name",
+          hotelAlt: "or similar category",
+          checkIn: "",
+          checkOut: "",
           nights: "1",
           roomType: "Double Sharing",
           rooms: "1",
           mealType: "MAP",
+          image: DEFAULT_HOTEL_IMAGES[0],
+          extraBed: "0",
+          childWithBed: "0",
         },
       ],
     }));
@@ -180,19 +257,12 @@ export function ItineraryEditor({
   const removeHotel = (hid: string) =>
     setData((p) => ({ ...p, hotels: p.hotels.filter((h) => h.id !== hid) }));
 
-  // hotelImages may be shorter than HOTEL_IMAGE_SLOTS (older itineraries
-  // default to []) — pad up to the slot being edited so a replace on an
-  // unfilled slot doesn't silently drop into the wrong index.
-  const updateHotelImage = (index: number, src: string) =>
-    setData((p) => {
-      const next = [...p.hotelImages];
-      while (next.length <= index) next.push(DEFAULT_HOTEL_IMAGES[next.length] ?? "");
-      next[index] = src;
-      return { ...p, hotelImages: next };
-    });
-
   /* ---------- activities ---------- */
-  const updateActivity = (aid: string, field: "name" | "place" | "time" | "image", value: string) =>
+  const updateActivity = (
+    aid: string,
+    field: "name" | "place" | "time" | "image" | "day",
+    value: string,
+  ) =>
     setData((p) => ({
       ...p,
       activities: p.activities.map((a) => (a.id === aid ? { ...a, [field]: value } : a)),
@@ -212,12 +282,37 @@ export function ItineraryEditor({
           place: "Destination",
           time: "Duration",
           image: "/itinerary/shikara.webp",
+          day: "",
         },
       ],
     }));
 
   const removeActivity = (aid: string) =>
     setData((p) => ({ ...p, activities: p.activities.filter((a) => a.id !== aid) }));
+
+  /* ---------- optional activities / local taxis (shared priceActivitySchema) ---------- */
+  const updatePriceActivity = (
+    key: "optionalActivities" | "localTaxis",
+    id: string,
+    field: "name" | "place" | "day" | "note" | "price",
+    value: string,
+  ) =>
+    setData((p) => ({
+      ...p,
+      [key]: p[key].map((a) => (a.id === id ? { ...a, [field]: value } : a)),
+    }));
+
+  const addPriceActivity = (key: "optionalActivities" | "localTaxis") =>
+    setData((p) => ({
+      ...p,
+      [key]: [
+        ...p[key],
+        { id: genId("pa"), name: "New Item", place: "", day: "", note: "", price: "" },
+      ],
+    }));
+
+  const removePriceActivity = (key: "optionalActivities" | "localTaxis", id: string) =>
+    setData((p) => ({ ...p, [key]: p[key].filter((a) => a.id !== id) }));
 
   /* ---------- trust ---------- */
   const updateTrust = (tid: string, field: "title" | "subtitle", value: string) =>
@@ -233,13 +328,40 @@ export function ItineraryEditor({
       whyChoose: p.whyChoose.map((w) => (w.id === wid ? { ...w, [field]: value } : w)),
     }));
 
-  /* ---------- lists ---------- */
+  /* ---------- pay tags (plain string[]) ---------- */
   const addListItem = (key: ListKey, item: string) =>
     setData((p) => ({ ...p, [key]: [...p[key], item] }));
   const updateListItem = (key: ListKey, idx: number, value: string) =>
     setData((p) => ({ ...p, [key]: p[key].map((v, i) => (i === idx ? value : v)) }));
   const removeListItem = (key: ListKey, idx: number) =>
     setData((p) => ({ ...p, [key]: p[key].filter((_, i) => i !== idx) }));
+
+  /* ---------- inclusions/exclusions (category + text rows) ---------- */
+  const addListItemRow = (key: "inc" | "exc") =>
+    setData((p) => ({ ...p, [key]: [...p[key], { id: genId("li"), category: "", text: "" }] }));
+  const updateListItemRow = (
+    key: "inc" | "exc",
+    id: string,
+    field: "category" | "text",
+    value: string,
+  ) =>
+    setData((p) => ({
+      ...p,
+      [key]: p[key].map((v) => (v.id === id ? { ...v, [field]: value } : v)),
+    }));
+  const removeListItemRow = (key: "inc" | "exc", id: string) =>
+    setData((p) => ({ ...p, [key]: p[key].filter((v) => v.id !== id) }));
+
+  /* ---------- cancellation tiers (label + charge rows) ---------- */
+  const addCancelTier = () =>
+    setData((p) => ({ ...p, cancel: [...p.cancel, { id: genId("ct"), label: "", charge: "" }] }));
+  const updateCancelTier = (id: string, field: "label" | "charge", value: string) =>
+    setData((p) => ({
+      ...p,
+      cancel: p.cancel.map((v) => (v.id === id ? { ...v, [field]: value } : v)),
+    }));
+  const removeCancelTier = (id: string) =>
+    setData((p) => ({ ...p, cancel: p.cancel.filter((v) => v.id !== id) }));
 
   /* ---------- actions ---------- */
   async function handleSave() {
@@ -250,7 +372,7 @@ export function ItineraryEditor({
     setSaving(true);
     try {
       const payload = { title: title.trim(), status, data };
-      const res = await fetch(id ? `/api/itineraries/${id}` : "/api/itineraries", {
+      const res = await fetch(id ? `${apiBasePath}/${id}` : apiBasePath, {
         method: id ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -277,9 +399,9 @@ export function ItineraryEditor({
       // needs a saved itinerary id. An unsaved draft simply exports without a
       // QR (see downloadItineraryPdf) rather than blocking export.
       let tokenPaymentLink: TokenPaymentLink | undefined;
-      if (id) {
+      if (id && !disableTokenPaymentLink) {
         try {
-          const res = await fetch(`/api/itineraries/${id}/token-payment-link`, { method: "POST" });
+          const res = await fetch(`${apiBasePath}/${id}/token-payment-link`, { method: "POST" });
           const json = await res.json().catch(() => ({}));
           if (res.ok) {
             tokenPaymentLink = { shortUrl: json.shortUrl, amountRupees: json.amountRupees };
@@ -291,7 +413,13 @@ export function ItineraryEditor({
         }
       }
 
-      const { bytes } = await downloadItineraryPdf(data, companyAddress, tokenPaymentLink, trustContent);
+      const { bytes } = await downloadItineraryPdf(
+        data,
+        companyAddress,
+        tokenPaymentLink,
+        trustContent,
+        socialLinks,
+      );
       const kb = Math.round(bytes / 1024);
       if (bytes > 1024 * 1024) {
         toast.warning(
@@ -306,7 +434,7 @@ export function ItineraryEditor({
       // account/bookings/[id]/page.tsx). Never downgrades an already
       // SENT/CONFIRMED itinerary.
       if (id && status === "DRAFT") {
-        const res = await fetch(`/api/itineraries/${id}`, {
+        const res = await fetch(`${apiBasePath}/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ status: "SENT" }),
@@ -334,6 +462,12 @@ export function ItineraryEditor({
     "page rounded-xl border border-[hsl(40_14%_87%)] bg-white p-5 shadow-page dark:border-mute/20 dark:bg-card sm:p-8 md:p-12";
   const addBtn =
     "addbtn mt-3 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[hsl(156_40%_21%)]/40 px-3 py-1.5 text-xs font-bold text-[hsl(156_40%_21%)] transition hover:bg-[hsl(150_28%_92%)]/60 dark:border-primary/40 dark:text-primary dark:hover:bg-primary/10 no-print";
+  const fieldLabel =
+    "block text-[11px] font-semibold uppercase tracking-wide text-mute dark:text-muted-foreground mb-1";
+  const numberInputCls =
+    "w-full rounded-md border border-[hsl(40_14%_87%)] bg-transparent px-2 py-1 text-sm outline-none transition-all focus:bg-muted/30 focus:ring-1 focus:ring-primary/30 dark:border-mute/20 print:border-none print:bg-transparent print:p-0 print:focus:ring-0";
+  const iconChipCls =
+    "flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[hsl(150_28%_92%)] text-[hsl(156_40%_21%)] dark:bg-primary/15 dark:text-primary";
 
   return (
     <div className="pb-8">
@@ -374,41 +508,36 @@ export function ItineraryEditor({
 
           {/* Destinations + Daily Itinerary */}
           <article className={pageCard}>
-            <div className="text-center">
-              <ItineraryIcon
-                icon="map-pin"
-                className="mx-auto h-7 w-7 text-[hsl(156_40%_21%)] dark:text-primary"
-              />
-              <p className="font-serif mt-2 text-xl font-semibold text-ink/70 dark:text-muted-foreground">
+            {/* Destinations gets its own full-width card, then every other
+                info[] row wraps as its own small card below — same two-row
+                shape as the PDF (not one shared strip that a longer
+                destinations list or an older itinerary's extra info rows
+                could overflow). */}
+            <div className="rounded-xl bg-[#F4F8F6] p-4 dark:bg-muted/20">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7C73] dark:text-muted-foreground">
                 Destinations
               </p>
               <EditableField
                 value={data.destinations}
                 onValueChange={(v) => updateCover("destinations", v)}
-                className="font-serif mt-1 text-center text-3xl font-bold text-[hsl(156_40%_21%)] dark:text-primary"
+                className="mt-1 text-lg font-bold text-[#0F2A1E] dark:text-primary"
               />
             </div>
-
-            {/* Info bar */}
-            <div className="mt-8 grid grid-cols-2 gap-y-6 rounded-2xl border border-[hsl(40_14%_87%)] bg-white px-3 py-6 shadow-soft dark:border-mute/20 dark:bg-card sm:grid-cols-4 sm:px-7 sm:py-7">
-              {data.info.map((it, i) => (
+            <div className="mt-3 flex flex-wrap gap-3">
+              {data.info.map((it) => (
                 <div
                   key={it.id}
-                  className={`flex flex-col items-center px-2 text-center sm:px-4 ${i ? "sm:border-l sm:border-[hsl(40_14%_87%)] dark:sm:border-mute/20" : ""}`}
+                  className="min-w-[140px] flex-1 rounded-xl bg-[#F4F8F6] p-4 dark:bg-muted/20"
                 >
-                  <ItineraryIcon
-                    icon={it.icon}
-                    className="h-6 w-6 text-[hsl(156_40%_21%)] dark:text-primary"
+                  <EditableField
+                    value={it.label}
+                    onValueChange={(v) => updateInfo(it.id, "label", v)}
+                    className="text-[11px] font-semibold uppercase tracking-wide text-[#6B7C73] dark:text-muted-foreground"
                   />
                   <EditableField
                     value={it.value}
                     onValueChange={(v) => updateInfo(it.id, "value", v)}
-                    className="mt-2.5 text-center text-sm font-bold"
-                  />
-                  <EditableField
-                    value={it.label}
-                    onValueChange={(v) => updateInfo(it.id, "label", v)}
-                    className="text-center text-[12px] text-mute dark:text-muted-foreground"
+                    className="mt-1 text-sm font-bold text-[#0F2A1E] dark:text-foreground"
                   />
                 </div>
               ))}
@@ -419,9 +548,12 @@ export function ItineraryEditor({
               <span className="h-px flex-1 bg-[hsl(40_14%_87%)] dark:bg-mute/20" />
             </div>
 
-            <div className="mt-7 space-y-8">
+            <div className="mt-7 space-y-4">
               {data.days.map((day, dayIdx) => (
-                <div key={day.id} className="dayitem group relative flex gap-5">
+                <div
+                  key={day.id}
+                  className="dayitem group relative flex flex-col rounded-xl border border-[#DCE7E0] dark:border-mute/20 sm:flex-row sm:items-stretch"
+                >
                   <button
                     onClick={() => removeDay(day.id)}
                     aria-label={`Remove day ${dayIdx + 1}`}
@@ -429,34 +561,79 @@ export function ItineraryEditor({
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>
-                  <div className="flex flex-col items-center">
-                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[hsl(156_40%_21%)] text-center text-white dark:bg-primary">
-                      <span className="text-[10px] font-semibold tracking-wide">DAY</span>
-                      <span className="text-[16px] font-extrabold">
-                        {String(dayIdx + 1).padStart(2, "0")}
-                      </span>
-                    </span>
-                    <span className="dotline mt-1 w-px flex-1" />
-                  </div>
-                  <div className="flex flex-1 flex-col items-start gap-5 pb-2 md:flex-row md:flex-nowrap">
-                    <div className="min-w-0 flex-1">
+
+                  {/* Content — matches the PDF's day card: big light numeral +
+                      title + date on one line, description, highlight pills,
+                      then a meals/stay icon row. No colored header bar or
+                      boxed highlights panel anymore — same plain card the
+                      PDF now uses. */}
+                  <div className="min-w-0 flex-1 p-4">
+                    <div className="flex items-baseline gap-3">
+                      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                        <span className="shrink-0 font-serif text-2xl font-bold text-[#B8D4C4]">
+                          {String(dayIdx + 1).padStart(2, "0")}
+                        </span>
+                        <EditableField
+                          value={day.title}
+                          onValueChange={(v) => updateDay(day.id, { title: v })}
+                          className="min-w-0 flex-1 font-serif text-base font-bold text-[#0F2A1E] dark:text-foreground"
+                        />
+                      </div>
                       <EditableField
-                        value={day.title}
-                        onValueChange={(v) => updateDay(day.id, { title: v })}
-                        className="font-serif text-xl font-bold text-ink dark:text-foreground"
+                        value={day.dateLabel}
+                        onValueChange={(v) => updateDay(day.id, { dateLabel: v })}
+                        placeholder="Wed 10 Jun"
+                        className="w-24 shrink-0 text-right text-xs text-[#6B7C73] dark:text-muted-foreground"
                       />
-                      <EditableField
-                        value={day.body}
-                        onValueChange={(v) => updateDay(day.id, { body: v })}
-                        className="mt-1.5 block text-sm leading-relaxed text-ink/70 dark:text-muted-foreground"
-                        rows={3}
-                      />
-                      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-3 sm:gap-x-9">
-                        {day.meta.map((m) => (
-                          <div
-                            key={m.id}
-                            className="metaitem group/m relative flex items-start gap-2"
-                          >
+                    </div>
+                    <EditableField
+                      value={day.body}
+                      onValueChange={(v) => updateDay(day.id, { body: v })}
+                      className="mt-2 block text-sm leading-relaxed text-[#3D4F45] dark:text-muted-foreground"
+                      rows={3}
+                    />
+
+                    {day.meta
+                      .filter((m) => m.label.trim().toLowerCase() === "highlights")
+                      .map((m) => {
+                        const highlightPoints = parseHighlights(m.value);
+                        return (
+                          <div key={m.id} className="mt-3 flex flex-wrap items-center gap-2">
+                            {highlightPoints.map((point, i) => (
+                              <span key={i} className="group/hl relative">
+                                <EditableField
+                                  value={point}
+                                  onValueChange={(v) =>
+                                    updateHighlightPoint(day.id, m.id, m.value, i, v)
+                                  }
+                                  className="rounded-full bg-[#E8F2EB] px-3 py-1 text-xs text-[#145C3E] dark:bg-primary/10 dark:text-primary"
+                                />
+                                <button
+                                  onClick={() => removeHighlightPoint(day.id, m.id, m.value, i)}
+                                  aria-label="Remove highlight"
+                                  className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] text-white group-hover/hl:flex no-print"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                            {highlightPoints.length < MAX_HIGHLIGHTS && (
+                              <button
+                                onClick={() => addHighlightPoint(day.id, m.id, m.value)}
+                                className="inline-flex items-center gap-1 rounded-full border border-dashed border-[#145C3E]/40 px-2.5 py-1 text-[11px] font-bold text-[#145C3E] dark:border-primary/40 dark:text-primary no-print"
+                              >
+                                <Plus className="h-2.5 w-2.5" /> point
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                    <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[#EDF3EF] pt-3 dark:border-mute/20">
+                      {day.meta
+                        .filter((m) => m.label.trim().toLowerCase() !== "highlights")
+                        .map((m) => (
+                          <div key={m.id} className="metaitem group/m relative flex items-center gap-1.5">
                             <button
                               onClick={() => removeMeta(day.id, m.id)}
                               className="absolute -left-2 -top-2 hidden h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-white text-xs group-hover/m:flex no-print"
@@ -465,45 +642,55 @@ export function ItineraryEditor({
                             </button>
                             <ItineraryIcon
                               icon={m.label.trim().toLowerCase()}
-                              className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(156_40%_21%)] dark:text-primary"
+                              className="h-3.5 w-3.5 shrink-0 text-[#145C3E] dark:text-primary"
                             />
-                            <div className="leading-tight">
-                              <EditableField
-                                value={m.label}
-                                onValueChange={(v) => updateMeta(day.id, m.id, "label", v)}
-                                className="w-[96px] text-[12px] font-bold sm:w-[110px]"
-                              />
-                              <EditableField
-                                value={m.value}
-                                onValueChange={(v) => updateMeta(day.id, m.id, "value", v)}
-                                className="w-[120px] text-[12px] text-mute dark:text-muted-foreground sm:w-[150px]"
-                              />
-                            </div>
+                            <EditableField
+                              value={m.label}
+                              onValueChange={(v) => updateMeta(day.id, m.id, "label", v)}
+                              className="w-14 text-[11px] text-[#6B7C73] dark:text-muted-foreground"
+                            />
+                            <EditableField
+                              value={m.value}
+                              onValueChange={(v) => updateMeta(day.id, m.id, "value", v)}
+                              className="w-auto min-w-[80px] text-xs text-[#0F2A1E] dark:text-foreground"
+                            />
                           </div>
                         ))}
-                      </div>
                       <button
                         onClick={() => addMeta(day.id)}
-                        className="addbtn mt-3 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[hsl(156_40%_21%)]/40 px-2.5 py-1 text-[12px] font-bold text-[hsl(156_40%_21%)] transition hover:bg-[hsl(150_28%_92%)]/60 dark:border-primary/40 dark:text-primary dark:hover:bg-primary/10 no-print"
+                        className="addbtn inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[#145C3E]/40 px-2.5 py-1 text-[12px] font-bold text-[#145C3E] transition hover:bg-[#E8F2EB] dark:border-primary/40 dark:text-primary dark:hover:bg-primary/10 no-print"
                       >
                         <Plus className="h-3 w-3" /> detail
                       </button>
                     </div>
-                    <div className="relative w-full shrink-0 md:w-auto">
-                      <ImagePicker
-                        value={day.image}
-                        onChange={(src) => updateDay(day.id, { image: src })}
-                        className="absolute right-2 top-2 z-10"
-                        label="Replace"
-                      />
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={day.image}
-                        alt={day.title}
-                        className="h-[120px] w-full rounded-xl object-cover shadow-soft md:w-[210px]"
-                        loading="lazy"
-                      />
-                    </div>
+                  </div>
+
+                  <div className="relative h-[200px] shrink-0 overflow-hidden rounded-b-xl sm:h-auto sm:w-[150px] sm:rounded-bl-none sm:rounded-r-xl">
+                    <ImagePicker
+                      value={day.image}
+                      onChange={(src) => updateDay(day.id, { image: src })}
+                      className="absolute right-2 top-2 z-10"
+                      label="Replace"
+                    />
+                    {/* `absolute inset-0` (not a percentage height on an
+                        in-flow child) is what actually makes this match the
+                        content column's height exactly — a plain height:100%
+                        img is spec'd to resolve as "auto" against a
+                        stretched-but-not-explicitly-sized flex item in most
+                        browsers, which is what was making this taller than
+                        the content. Absolute positioning resolves against
+                        the parent's final computed box instead, which is
+                        unambiguous. The overflow-hidden + rounded corners
+                        live on THIS wrapper (not the outer card) so they
+                        don't clip the day's floating remove button, which
+                        deliberately sits outside the card's edge. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={day.image}
+                      alt={day.title}
+                      className="absolute inset-0 h-full w-full object-cover"
+                      loading="lazy"
+                    />
                   </div>
                 </div>
               ))}
@@ -526,126 +713,208 @@ export function ItineraryEditor({
               <span className="h-px flex-1 bg-[hsl(40_14%_87%)] dark:bg-mute/20" />
             </div>
 
-            <div className="acc-wrap mt-6 overflow-x-auto rounded-xl border border-[hsl(40_14%_87%)] dark:border-mute/20">
-              <table className="w-full min-w-[520px] text-left text-sm">
-                <thead className="bg-[hsl(150_28%_92%)] text-xs font-bold text-[hsl(156_40%_21%)] dark:bg-muted/30 dark:text-primary">
-                  <tr>
-                    <th className="px-5 py-3.5">Destination</th>
-                    <th className="px-5 py-3.5">Hotel Details</th>
-                    <th className="w-[70px] px-5 py-3.5">Nights</th>
-                    <th className="w-[120px] px-5 py-3.5">Room Type</th>
-                    <th className="w-[90px] px-5 py-3.5">No. of Rooms</th>
-                    <th className="w-[90px] px-5 py-3.5">Meal Type</th>
-                    <th className="w-10 px-2 no-print"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[hsl(40_14%_87%)] dark:divide-mute/20">
-                  {data.hotels.map((h, idx) => (
-                    <tr
-                      key={h.id}
-                      className={
-                        idx % 2 === 0
-                          ? "bg-white dark:bg-card"
-                          : "bg-[hsl(150_28%_92%)]/30 dark:bg-muted/10"
-                      }
-                    >
-                      <td className="px-5 py-3">
+            <div className="mt-6 space-y-5">
+              {data.hotels.map((h, idx) => (
+                <div
+                  key={h.id}
+                  className="group/hotel relative flex flex-col rounded-xl border border-[hsl(40_14%_87%)] dark:border-mute/20 sm:flex-row sm:items-stretch"
+                >
+                  <button
+                    onClick={() => removeHotel(h.id)}
+                    aria-label={`Remove hotel row ${idx + 1}`}
+                    className="absolute -left-2 -top-2 z-20 hidden h-6 w-6 items-center justify-center rounded-full bg-rose-500 text-white opacity-0 transition-opacity group-hover/hotel:flex group-hover/hotel:opacity-100 no-print"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+
+                  {/* Content — 60% */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:w-[60%] sm:flex-none">
+                    <div>
+                      <label className={fieldLabel}>Hotel Name</label>
+                      <EditableField
+                        value={h.hotelDetails}
+                        onValueChange={(v) => updateHotel(h.id, "hotelDetails", v)}
+                        className="font-semibold"
+                      />
+                      <EditableField
+                        value={h.hotelAlt}
+                        onValueChange={(v) => updateHotel(h.id, "hotelAlt", v)}
+                        placeholder="or similar category"
+                        className="mt-0.5 text-xs text-mute dark:text-muted-foreground"
+                      />
+                    </div>
+                    <div>
+                      <label className={fieldLabel}>Location</label>
+                      <EditableField
+                        value={h.destination}
+                        onValueChange={(v) => updateHotel(h.id, "destination", v)}
+                      />
+                    </div>
+
+                    {/* Check In / Check Out / Nights / No. of Rooms / Room Type / Extra Bed / Child With Bed / Meal Type */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-[hsl(40_14%_87%)] pt-3 dark:border-mute/20">
+                      <div>
+                        <label className={fieldLabel}>Check In</label>
                         <EditableField
-                          value={h.destination}
-                          onValueChange={(v) => updateHotel(h.id, "destination", v)}
-                          className="font-semibold"
+                          value={h.checkIn}
+                          onValueChange={(v) => updateHotel(h.id, "checkIn", v)}
+                          placeholder="Wed 10 Jun"
                         />
-                      </td>
-                      <td className="px-5 py-3">
+                      </div>
+                      <div>
+                        <label className={fieldLabel}>Check Out</label>
                         <EditableField
-                          value={h.hotelDetails}
-                          onValueChange={(v) => updateHotel(h.id, "hotelDetails", v)}
-                          className="text-ink/75 dark:text-muted-foreground"
+                          value={h.checkOut}
+                          onValueChange={(v) => updateHotel(h.id, "checkOut", v)}
+                          placeholder="Sat 13 Jun"
                         />
-                      </td>
-                      <td className="px-5 py-3">
-                        <EditableField
-                          value={h.nights}
-                          onValueChange={(v) => updateHotel(h.id, "nights", v)}
-                        />
-                      </td>
-                      <td className="px-5 py-3">
-                        <EditableField
-                          value={h.roomType}
-                          onValueChange={(v) => updateHotel(h.id, "roomType", v)}
-                        />
-                      </td>
-                      <td className="px-5 py-3">
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={h.rooms}
-                          onChange={(e) => updateHotel(h.id, "rooms", e.target.value)}
-                          onBlur={(e) => {
-                            const n = parseInt(e.target.value, 10);
-                            if (!e.target.value.trim() || Number.isNaN(n) || n < 1) {
-                              updateHotel(h.id, "rooms", "1");
-                            }
-                          }}
-                          className="w-full rounded-md bg-transparent px-1 outline-none transition-all focus:bg-muted/30 focus:ring-1 focus:ring-primary/30 print:bg-transparent print:p-0 print:focus:ring-0"
-                        />
-                      </td>
-                      <td className="px-5 py-3">
-                        <EditableField
-                          value={h.mealType}
-                          onValueChange={(v) => updateHotel(h.id, "mealType", v)}
-                        />
-                      </td>
-                      <td className="px-2 no-print">
-                        <button
-                          onClick={() => removeHotel(h.id)}
-                          aria-label={`Remove hotel row ${idx + 1}`}
-                          className="text-rose-500 hover:text-rose-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={iconChipCls}>
+                          <ItineraryIcon icon="calendar" className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <label className={fieldLabel}>Nights</label>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={h.nights}
+                            onChange={(e) => updateHotel(h.id, "nights", e.target.value)}
+                            onBlur={(e) => {
+                              const n = parseInt(e.target.value, 10);
+                              if (!e.target.value.trim() || Number.isNaN(n) || n < 1) {
+                                updateHotel(h.id, "nights", "1");
+                              }
+                            }}
+                            className={numberInputCls}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={iconChipCls}>
+                          <ItineraryIcon icon="home" className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <label className={fieldLabel}>No. of Rooms</label>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={h.rooms}
+                            onChange={(e) => updateHotel(h.id, "rooms", e.target.value)}
+                            onBlur={(e) => {
+                              const n = parseInt(e.target.value, 10);
+                              if (!e.target.value.trim() || Number.isNaN(n) || n < 1) {
+                                updateHotel(h.id, "rooms", "1");
+                              }
+                            }}
+                            className={numberInputCls}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={iconChipCls}>
+                          <ItineraryIcon icon="stay" className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <label className={fieldLabel}>Room Type</label>
+                          <EditableField
+                            value={h.roomType}
+                            onValueChange={(v) => updateHotel(h.id, "roomType", v)}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={iconChipCls}>
+                          <ItineraryIcon icon="stay" className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <label className={fieldLabel}>Extra Bed</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={h.extraBed}
+                            onChange={(e) => updateHotel(h.id, "extraBed", e.target.value)}
+                            onBlur={(e) => {
+                              const n = parseInt(e.target.value, 10);
+                              if (!e.target.value.trim() || Number.isNaN(n) || n < 0) {
+                                updateHotel(h.id, "extraBed", "0");
+                              }
+                            }}
+                            className={numberInputCls}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={iconChipCls}>
+                          <ItineraryIcon icon="users" className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <label className={fieldLabel}>Child With Bed</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={h.childWithBed}
+                            onChange={(e) => updateHotel(h.id, "childWithBed", e.target.value)}
+                            onBlur={(e) => {
+                              const n = parseInt(e.target.value, 10);
+                              if (!e.target.value.trim() || Number.isNaN(n) || n < 0) {
+                                updateHotel(h.id, "childWithBed", "0");
+                              }
+                            }}
+                            className={numberInputCls}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={iconChipCls}>
+                          <ItineraryIcon icon="meals" className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <label className={fieldLabel}>Meal Type</label>
+                          <EditableField
+                            value={h.mealType}
+                            onValueChange={(v) => updateHotel(h.id, "mealType", v)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Image — 40%. `absolute inset-0` (not a percentage
+                      height on an in-flow child) is what actually matches
+                      this to the content column's height — same reasoning
+                      as the day card's image above. overflow-hidden +
+                      rounded corners live on this wrapper, not the outer
+                      card, so they don't clip the floating remove button. */}
+                  <div className="relative h-[200px] shrink-0 overflow-hidden rounded-b-xl sm:h-auto sm:w-[40%] sm:rounded-bl-none sm:rounded-r-xl">
+                    <ImagePicker
+                      value={h.image}
+                      onChange={(src) => updateHotel(h.id, "image", src)}
+                      className="absolute right-2 top-2 z-10"
+                      label="Replace"
+                    />
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={h.image}
+                      alt={h.hotelDetails}
+                      className="absolute inset-0 h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
 
             <button onClick={addHotel} className={addBtn}>
               <Plus className="h-3 w-3" /> Add Hotel
             </button>
-            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1">
-              {MEAL_PLAN_LEGEND.map((l) => (
-                <p key={l.code} className="text-[12px] text-mute dark:text-muted-foreground">
-                  <strong className="font-bold text-ink dark:text-foreground">{l.code}</strong>{" "}
-                  <span className="opacity-60">→</span> {l.meaning}
-                </p>
-              ))}
-            </div>
-            <p className="mt-2.5 text-[12px] italic text-mute dark:text-muted-foreground">
+            <p className="mt-3 text-[12px] italic text-mute dark:text-muted-foreground">
               *All accommodations are subject to availability at the time of confirmation.
             </p>
-
-            <div className="mt-6 grid grid-cols-3 gap-4">
-              {Array.from({ length: HOTEL_IMAGE_SLOTS }).map((_, i) => (
-                <div key={i} className="relative">
-                  <ImagePicker
-                    value={data.hotelImages[i] ?? DEFAULT_HOTEL_IMAGES[i] ?? ""}
-                    onChange={(src) => updateHotelImage(i, src)}
-                    className="absolute right-2 top-2 z-10"
-                    label="Replace"
-                  />
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={data.hotelImages[i] || DEFAULT_HOTEL_IMAGES[i] || "/itinerary/hero.webp"}
-                    alt="Hotel / room"
-                    className="h-[120px] w-full rounded-xl object-cover shadow-soft"
-                    loading="lazy"
-                  />
-                </div>
-              ))}
-            </div>
 
             <div className="mt-7 grid grid-cols-2 gap-y-6 rounded-2xl bg-[hsl(40_33%_96%)] px-3 py-6 dark:bg-muted/20 sm:grid-cols-4 sm:px-7">
               {data.trust.map((t, i) => (
@@ -725,6 +994,14 @@ export function ItineraryEditor({
                             onValueChange={(v) => updateActivity(a.id, "time", v)}
                           />
                         </span>
+                        <span className="flex items-center gap-1">
+                          <ItineraryIcon icon="calendar" className="h-3.5 w-3.5" />
+                          <EditableField
+                            value={a.day}
+                            onValueChange={(v) => updateActivity(a.id, "day", v)}
+                            placeholder="Day 05"
+                          />
+                        </span>
                       </div>
                     </div>
                     <button
@@ -741,6 +1018,18 @@ export function ItineraryEditor({
                 <Plus className="h-3 w-3" /> Add Activity
               </button>
             </div>
+
+            {/* "Available on the day" — paid-locally activities, not part of
+                the package. Same add/remove-to-zero shape as Included
+                Activities above, minus the photo. */}
+            <PriceActivitySection
+              title="Available on the Day"
+              items={data.optionalActivities}
+              onUpdate={(id, field, v) => updatePriceActivity("optionalActivities", id, field, v)}
+              onRemove={(id) => removePriceActivity("optionalActivities", id)}
+              onAdd={() => addPriceActivity("optionalActivities")}
+              addLabel="Add Activity"
+            />
 
             <Footer />
           </article>
@@ -768,6 +1057,59 @@ export function ItineraryEditor({
                     onValueChange={(v) => updateCover("transportDesc", v)}
                     className="mt-1 text-sm text-mute dark:text-muted-foreground"
                   />
+                  <div className="mt-3 flex flex-wrap gap-3 text-xs text-mute dark:text-muted-foreground">
+                    <EditableField
+                      value={data.transportSeats}
+                      onValueChange={(v) => updateCover("transportSeats", v)}
+                      placeholder="4 seats"
+                    />
+                    <EditableField
+                      value={data.transportBags}
+                      onValueChange={(v) => updateCover("transportBags", v)}
+                      placeholder="2 large bags"
+                    />
+                    <EditableField
+                      value={data.transportDays}
+                      onValueChange={(v) => updateCover("transportDays", v)}
+                      placeholder="Day 01 – 06"
+                    />
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {data.transportTags.map((tag, idx) => (
+                      <span key={idx} className="group/tag relative">
+                        <EditableField
+                          value={tag}
+                          onValueChange={(v) =>
+                            setData((p) => ({
+                              ...p,
+                              transportTags: p.transportTags.map((t, i) => (i === idx ? v : t)),
+                            }))
+                          }
+                          className="rounded-full bg-[hsl(150_28%_92%)] px-3 py-1 text-[11px] font-bold text-[hsl(156_40%_21%)] dark:bg-primary/10 dark:text-primary"
+                        />
+                        <button
+                          onClick={() =>
+                            setData((p) => ({
+                              ...p,
+                              transportTags: p.transportTags.filter((_, i) => i !== idx),
+                            }))
+                          }
+                          aria-label={`Remove tag ${tag}`}
+                          className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] text-white group-hover/tag:flex no-print"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    <button
+                      onClick={() =>
+                        setData((p) => ({ ...p, transportTags: [...p.transportTags, "New tag"] }))
+                      }
+                      className="addbtn inline-flex items-center gap-1 rounded-full border border-dashed border-[hsl(156_40%_21%)]/40 px-2.5 py-1 text-[11px] font-bold text-[hsl(156_40%_21%)] dark:border-primary/40 dark:text-primary no-print"
+                    >
+                      <Plus className="h-2.5 w-2.5" /> tag
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="relative">
@@ -787,23 +1129,28 @@ export function ItineraryEditor({
               </div>
             </div>
 
-            <div className="mt-11 grid gap-10 sm:grid-cols-2">
+            {/* Inclusions/Exclusions — separate full-width row sections
+                rather than side-by-side columns, so each reads as its own
+                section like every other block on the page. */}
+            <div className="mt-11 space-y-10">
               <ListColumn
                 title="Package Inclusions"
                 items={data.inc}
                 tone="inc"
-                onUpdate={(i, v) => updateListItem("inc", i, v)}
-                onRemove={(i) => removeListItem("inc", i)}
-                onAdd={() => addListItem("inc", "New inclusion item")}
+                onUpdateCategory={(id, v) => updateListItemRow("inc", id, "category", v)}
+                onUpdateText={(id, v) => updateListItemRow("inc", id, "text", v)}
+                onRemove={(id) => removeListItemRow("inc", id)}
+                onAdd={() => addListItemRow("inc")}
                 addLabel="Add inclusion"
               />
               <ListColumn
                 title="Package Exclusions"
                 items={data.exc}
                 tone="exc"
-                onUpdate={(i, v) => updateListItem("exc", i, v)}
-                onRemove={(i) => removeListItem("exc", i)}
-                onAdd={() => addListItem("exc", "New exclusion item")}
+                onUpdateCategory={(id, v) => updateListItemRow("exc", id, "category", v)}
+                onUpdateText={(id, v) => updateListItemRow("exc", id, "text", v)}
+                onRemove={(id) => removeListItemRow("exc", id)}
+                onAdd={() => addListItemRow("exc")}
                 addLabel="Add exclusion"
               />
             </div>
@@ -811,26 +1158,137 @@ export function ItineraryEditor({
             <Footer />
           </article>
 
-          {/* Terms */}
+          {/* Payment & Cancellation — Payment card full width (3 columns
+              inside: step 1 | step 2 | tags+note, divided by vertical
+              rules), then the Cancellation card full width below it — same
+              stacked shape as the PDF, not two side-by-side cards. */}
           <article className={pageCard}>
             <h2 className="font-serif text-3xl font-bold text-[hsl(156_40%_21%)] dark:text-primary">
-              Terms &amp; Policies
+              Payment &amp; Cancellation
             </h2>
-            <div className="mt-8 grid gap-7 sm:grid-cols-2">
-              <PolicyCard
-                title="Payment Policy"
-                items={data.pay}
-                onUpdate={(i, v) => updateListItem("pay", i, v)}
-                onRemove={(i) => removeListItem("pay", i)}
-                onAdd={() => addListItem("pay", "New policy point")}
-              />
-              <PolicyCard
-                title="Cancellation Policy"
+
+            <div className="mt-8 rounded-2xl border border-[hsl(40_14%_87%)] bg-white p-6 shadow-soft dark:border-mute/20 dark:bg-card">
+              <h3 className="text-base font-bold">How payment works</h3>
+              <div className="mt-4 flex flex-col gap-5 sm:flex-row sm:items-stretch">
+                <div className="sm:min-w-0 sm:flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#145C3E] text-[10px] font-bold text-white">
+                      1
+                    </span>
+                    <EditableField
+                      value={data.payStep1Title}
+                      onValueChange={(v) => updateCover("payStep1Title", v)}
+                      className="min-w-0 flex-1 text-sm font-bold"
+                    />
+                  </div>
+                  <EditableField
+                    value={data.payStep1Desc}
+                    onValueChange={(v) => updateCover("payStep1Desc", v)}
+                    className="ml-7 mt-1 text-xs text-mute dark:text-muted-foreground"
+                  />
+                </div>
+
+                <div className="hidden w-px shrink-0 bg-[hsl(40_14%_87%)] dark:bg-mute/20 sm:block" />
+
+                <div className="sm:min-w-0 sm:flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#B8D4C4] text-[10px] font-bold text-[#0F3A28]">
+                      2
+                    </span>
+                    <EditableField
+                      value={data.payStep2Title}
+                      onValueChange={(v) => updateCover("payStep2Title", v)}
+                      className="min-w-0 flex-1 text-sm font-bold"
+                    />
+                  </div>
+                  <EditableField
+                    value={data.payStep2Desc}
+                    onValueChange={(v) => updateCover("payStep2Desc", v)}
+                    className="ml-7 mt-1 text-xs text-mute dark:text-muted-foreground"
+                  />
+                </div>
+
+                <div className="hidden w-px shrink-0 bg-[hsl(40_14%_87%)] dark:bg-mute/20 sm:block" />
+
+                <div className="sm:min-w-0 sm:flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {data.pay.map((tag, idx) => (
+                      <span key={idx} className="group/tag relative">
+                        <EditableField
+                          value={tag}
+                          onValueChange={(v) => updateListItem("pay", idx, v)}
+                          className="rounded-full bg-[hsl(150_28%_92%)] px-3 py-1 text-[11px] font-bold text-[hsl(156_40%_21%)] dark:bg-primary/10 dark:text-primary"
+                        />
+                        <button
+                          onClick={() => removeListItem("pay", idx)}
+                          aria-label={`Remove tag ${tag}`}
+                          className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] text-white group-hover/tag:flex no-print"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    <button
+                      onClick={() => addListItem("pay", "New tag")}
+                      className="addbtn inline-flex items-center gap-1 rounded-full border border-dashed border-[hsl(156_40%_21%)]/40 px-2.5 py-1 text-[11px] font-bold text-[hsl(156_40%_21%)] dark:border-primary/40 dark:text-primary no-print"
+                    >
+                      <Plus className="h-2.5 w-2.5" /> tag
+                    </button>
+                  </div>
+                  <EditableField
+                    value={data.payNote}
+                    onValueChange={(v) => updateCover("payNote", v)}
+                    className="mt-2 text-[11px] italic text-mute dark:text-muted-foreground"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <CancelTierCard
                 items={data.cancel}
-                onUpdate={(i, v) => updateListItem("cancel", i, v)}
-                onRemove={(i) => removeListItem("cancel", i)}
-                onAdd={() => addListItem("cancel", "New policy point")}
+                onUpdate={updateCancelTier}
+                onRemove={removeCancelTier}
+                onAdd={addCancelTier}
               />
+              {/* Cancellation footnotes — small add/remove text list, same
+                  pattern as the pay tags above. */}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {data.cancelNotes.map((note, idx) => (
+                  <span key={idx} className="group/note relative">
+                    <EditableField
+                      value={note}
+                      onValueChange={(v) =>
+                        setData((p) => ({
+                          ...p,
+                          cancelNotes: p.cancelNotes.map((n, i) => (i === idx ? v : n)),
+                        }))
+                      }
+                      className="rounded-full border border-[hsl(40_14%_87%)] px-3 py-1 text-[11px] text-mute dark:border-mute/20 dark:text-muted-foreground"
+                    />
+                    <button
+                      onClick={() =>
+                        setData((p) => ({
+                          ...p,
+                          cancelNotes: p.cancelNotes.filter((_, i) => i !== idx),
+                        }))
+                      }
+                      aria-label={`Remove note ${note}`}
+                      className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] text-white group-hover/note:flex no-print"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <button
+                  onClick={() =>
+                    setData((p) => ({ ...p, cancelNotes: [...p.cancelNotes, "New note"] }))
+                  }
+                  className="addbtn inline-flex items-center gap-1 rounded-full border border-dashed border-[hsl(156_40%_21%)]/40 px-2.5 py-1 text-[11px] font-bold text-[hsl(156_40%_21%)] dark:border-primary/40 dark:text-primary no-print"
+                >
+                  <Plus className="h-2.5 w-2.5" /> note
+                </button>
+              </div>
             </div>
             <Footer />
           </article>
@@ -987,20 +1445,101 @@ function Footer() {
   );
 }
 
-function ListColumn({
+function PriceActivitySection({
   title,
   items,
-  tone,
   onUpdate,
   onRemove,
   onAdd,
   addLabel,
 }: {
   title: string;
-  items: string[];
+  items: PriceActivityItem[];
+  onUpdate: (id: string, field: "name" | "place" | "day" | "note" | "price", v: string) => void;
+  onRemove: (id: string) => void;
+  onAdd: () => void;
+  addLabel: string;
+}) {
+  return (
+    <div className="mt-8">
+      <div className="flex items-center gap-4">
+        <h3 className="font-serif text-xl font-bold text-[hsl(156_40%_21%)] dark:text-primary">
+          {title}
+        </h3>
+        <span className="h-px flex-1 bg-[hsl(40_14%_87%)] dark:bg-mute/20" />
+      </div>
+      <div className="mt-4 space-y-3">
+        {items.map((a, idx) => (
+          <div
+            key={a.id}
+            className="group relative grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-[hsl(40_14%_87%)] p-3 pr-8 dark:border-mute/20 sm:grid-cols-6"
+          >
+            <EditableField
+              value={a.name}
+              onValueChange={(v) => onUpdate(a.id, "name", v)}
+              placeholder="Name"
+              className="text-sm font-bold sm:col-span-2"
+            />
+            <EditableField
+              value={a.place}
+              onValueChange={(v) => onUpdate(a.id, "place", v)}
+              placeholder="Place"
+              className="text-xs text-mute dark:text-muted-foreground"
+            />
+            <EditableField
+              value={a.day}
+              onValueChange={(v) => onUpdate(a.id, "day", v)}
+              placeholder="Day 02"
+              className="text-xs text-mute dark:text-muted-foreground"
+            />
+            <EditableField
+              value={a.note}
+              onValueChange={(v) => onUpdate(a.id, "note", v)}
+              placeholder="Note"
+              className="text-xs text-mute dark:text-muted-foreground"
+            />
+            <EditableField
+              value={a.price}
+              onValueChange={(v) => onUpdate(a.id, "price", v)}
+              placeholder="Rs. 840 pp"
+              className="text-right text-xs font-bold text-[hsl(156_40%_21%)] dark:text-primary"
+            />
+            <button
+              onClick={() => onRemove(a.id)}
+              aria-label={`Remove ${title} row ${idx + 1}`}
+              className="absolute right-2 top-1/2 hidden -translate-y-1/2 text-rose-500 hover:text-rose-600 group-hover:block no-print"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={onAdd}
+        className="addbtn mt-3 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[hsl(156_40%_21%)]/40 px-3 py-1.5 text-xs font-bold text-[hsl(156_40%_21%)] transition hover:bg-[hsl(150_28%_92%)]/60 dark:border-primary/40 dark:text-primary dark:hover:bg-primary/10 no-print"
+      >
+        <Plus className="h-3 w-3" /> {addLabel}
+      </button>
+    </div>
+  );
+}
+
+function ListColumn({
+  title,
+  items,
+  tone,
+  onUpdateCategory,
+  onUpdateText,
+  onRemove,
+  onAdd,
+  addLabel,
+}: {
+  title: string;
+  items: ListItem[];
   tone: "inc" | "exc";
-  onUpdate: (i: number, v: string) => void;
-  onRemove: (i: number) => void;
+  onUpdateCategory: (id: string, v: string) => void;
+  onUpdateText: (id: string, v: string) => void;
+  onRemove: (id: string) => void;
   onAdd: () => void;
   addLabel: string;
 }) {
@@ -1009,9 +1548,9 @@ function ListColumn({
       <h3 className="font-serif text-[22px] font-bold text-[hsl(156_40%_21%)] dark:text-primary">
         {title}
       </h3>
-      <ul className="mt-5 space-y-2.5 text-sm text-ink/85 dark:text-muted-foreground">
-        {items.map((item, idx) => (
-          <li key={idx} className="listrow group relative flex items-start gap-2.5 pr-6">
+      <ul className="mt-5 space-y-3 text-sm text-ink/85 dark:text-muted-foreground">
+        {items.map((item) => (
+          <li key={item.id} className="listrow group relative flex items-start gap-2.5 pr-6">
             <span
               className={`mt-0.5 flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-full text-white ${tone === "inc" ? "bg-[hsl(156_40%_21%)] dark:bg-primary" : "bg-rose-500"}`}
             >
@@ -1027,14 +1566,26 @@ function ListColumn({
                 {tone === "inc" ? <path d="M20 6 9 17l-5-5" /> : <path d="M18 6 6 18M6 6l12 12" />}
               </svg>
             </span>
-            <EditableField
-              value={item}
-              onValueChange={(v) => onUpdate(idx, v)}
-              className="flex-1"
-            />
+            <div className="min-w-0 flex-1">
+              {/* Category is a small, rarely-touched tag (not a prominent
+                  blank-looking field) — most rows already come with one
+                  filled in from the default content, staff mainly just edit
+                  the text below it. */}
+              <EditableField
+                value={item.category}
+                onValueChange={(v) => onUpdateCategory(item.id, v)}
+                placeholder="Category"
+                className="inline-block rounded bg-[#E8F2EB] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#145C3E] dark:bg-primary/10 dark:text-primary"
+              />
+              <EditableField
+                value={item.text}
+                onValueChange={(v) => onUpdateText(item.id, v)}
+                className="mt-1"
+              />
+            </div>
             <button
-              onClick={() => onRemove(idx)}
-              aria-label={`Remove item ${idx + 1} from ${title}`}
+              onClick={() => onRemove(item.id)}
+              aria-label={`Remove item from ${title}`}
               className="absolute right-0 top-0 hidden text-rose-500 group-hover:block no-print"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -1052,46 +1603,64 @@ function ListColumn({
   );
 }
 
-function PolicyCard({
-  title,
+function CancelTierCard({
   items,
   onUpdate,
   onRemove,
   onAdd,
 }: {
-  title: string;
-  items: string[];
-  onUpdate: (i: number, v: string) => void;
-  onRemove: (i: number) => void;
+  items: CancelTier[];
+  onUpdate: (id: string, field: "label" | "charge", v: string) => void;
+  onRemove: (id: string) => void;
   onAdd: () => void;
 }) {
   return (
     <div className="policy-card rounded-2xl border border-[hsl(40_14%_87%)] bg-white p-6 shadow-soft dark:border-mute/20 dark:bg-card">
-      <h3 className="text-base font-bold">{title}</h3>
-      <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-ink/80 dark:text-muted-foreground">
-        {items.map((item, idx) => (
-          <li key={idx} className="group relative flex items-start gap-2 pr-6">
-            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(156_40%_21%)] dark:bg-primary" />
-            <EditableField
-              value={item}
-              onValueChange={(v) => onUpdate(idx, v)}
-              className="flex-1 text-xs"
-            />
-            <button
-              onClick={() => onRemove(idx)}
-              aria-label={`Remove item ${idx + 1} from ${title}`}
-              className="absolute right-0 top-0 hidden text-rose-500 group-hover:block no-print"
+      <h3 className="text-base font-bold">If you need to cancel</h3>
+      <p className="mt-1 text-xs text-mute dark:text-muted-foreground">
+        Notice is counted from your first travel date. Cancellations must be requested by email.
+      </p>
+      <div className="mt-4 flex items-center justify-between border-b border-[hsl(40_14%_87%)] pb-2 text-[10px] font-semibold uppercase tracking-wide text-mute dark:border-mute/20 dark:text-muted-foreground">
+        <span>Notice before travel</span>
+        <span>Charge</span>
+      </div>
+      <ul className="text-sm leading-relaxed text-ink/80 dark:text-muted-foreground">
+        {items.map((item) => {
+          const pct = parseFloat(item.charge);
+          const high = !Number.isNaN(pct) && pct >= 50;
+          return (
+            <li
+              key={item.id}
+              className="group relative flex items-center gap-3 border-b border-[hsl(40_14%_87%)]/60 py-2.5 pr-6 last:border-0 dark:border-mute/10"
             >
-              <Trash2 className="h-3 w-3" />
-            </button>
-          </li>
-        ))}
+              <EditableField
+                value={item.label}
+                onValueChange={(v) => onUpdate(item.id, "label", v)}
+                placeholder="Notice given before travel"
+                className="flex-1 text-xs"
+              />
+              <EditableField
+                value={item.charge}
+                onValueChange={(v) => onUpdate(item.id, "charge", v)}
+                placeholder="Charge"
+                className={`w-16 shrink-0 text-right text-sm font-bold ${high ? "text-[#8A5340]" : "text-[#145C3E]"}`}
+              />
+              <button
+                onClick={() => onRemove(item.id)}
+                aria-label="Remove cancellation tier"
+                className="absolute right-0 top-0 hidden text-rose-500 group-hover:block no-print"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </li>
+          );
+        })}
       </ul>
       <button
         onClick={onAdd}
         className="addbtn mt-4 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-[hsl(156_40%_21%)]/40 px-3 py-1.5 text-xs font-bold text-[hsl(156_40%_21%)] transition hover:bg-[hsl(150_28%_92%)]/60 dark:border-primary/40 dark:text-primary dark:hover:bg-primary/10 no-print"
       >
-        <Plus className="h-3 w-3" /> Add point
+        <Plus className="h-3 w-3" /> Add tier
       </button>
     </div>
   );

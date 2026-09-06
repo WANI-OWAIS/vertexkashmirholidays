@@ -5,9 +5,7 @@ import { requirePermission } from "@/lib/permissions";
 import { resolveLeadCustomer } from "@/lib/bookings/customer";
 import { sendCustomerCredentialsEmail } from "@/lib/bookings/notify";
 import { resolveGst } from "@/lib/payments/gst";
-import { computeBookingFinance } from "@/lib/bookings/finance";
-import { computeGstDeduction, computeBookingProfit, computeCommission } from "@/lib/bookings/commission";
-import { pickAttribution } from "@/lib/attribution";
+import { convertLeadToBooking, LeadAlreadyConvertedError } from "@/lib/bookings/convertLead";
 import { enqueueForLead } from "@/lib/offlineConversion/service";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +32,12 @@ export async function POST(req: NextRequest, { params }: Params) {
   const { id } = await params;
 
   const lead = await prisma.lead.findUnique({ where: { id } });
-  if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+  // B2B requests convert via POST /api/admin/b2b-requests/[id]/convert instead
+  // — this route's resolveLeadCustomer() would wrongly create a second
+  // account for an agent who already has one, so B2B rows must never reach it.
+  if (!lead || lead.b2bAgentId !== null) {
+    return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+  }
 
   // Conversion is a lead activity, so only the staff member the lead is assigned
   // to may convert it — not an admin acting on someone else's lead.
@@ -95,123 +98,39 @@ export async function POST(req: NextRequest, { params }: Params) {
   const performedById = guard.user.id as string;
   const performedByName = (guard.user.name ?? guard.user.email) as string;
 
-  const result = await prisma.$transaction(async (tx) => {
-    // Link an existing customer (by email or phone) or create a new one. Returns a
-    // temp password when a brand-new customer account was created so we can email
-    // default credentials after the transaction commits.
-    const customer = await resolveLeadCustomer(tx, {
-      name: lead.name,
-      email: lead.email,
-      phone: lead.phone,
-    });
-
-    const travellers = lead.adults + (lead.children ?? 0);
-    const booking = await tx.booking.create({
-      data: {
-        userId: customer.customerId,
-        amount: bookingAmount,
-        status: "PENDING",
-        travelDate: lead.startDate ?? new Date(),
-        travelEndDate: lead.endDate ?? null,
-        travellers: travellers > 0 ? travellers : 1,
-        guestName: lead.name,
-        guestEmail: lead.email,
-        guestPhone: lead.phone,
-        // Attribution is captured once, at Lead creation — copied verbatim
-        // here rather than re-derived, per src/lib/attribution.ts.
-        ...pickAttribution(lead),
-        payments: {
-          create: {
-            amount: tokenAmount,
-            type: "TOKEN",
-            method: paymentMethod ?? null,
-            gstPercent: tokenGst.gstPercent,
-            gstAmount: tokenGst.gstAmount,
-            recordedById: performedById,
-            note: "Token / advance payment at conversion",
-          },
-        },
-      },
-      select: { id: true },
-    });
-
-    // Credit the converting salesperson with a commission record — only when
-    // they have an incentive rate configured (unset = not commission-eligible
-    // staff). The rate is snapshotted here and never re-read from the employee's
-    // profile later, so a future rate change never rewrites past commissions.
-    const employee = await tx.user.findUnique({
-      where: { id: performedById },
-      select: { bookingConversionPct: true },
-    });
-    const ratePct = employee?.bookingConversionPct;
-    if (ratePct != null && ratePct > 0) {
-      const finance = computeBookingFinance({
-        amount: bookingAmount,
-        discountType: null,
-        discountValue: 0,
-        payments: [{ amount: tokenAmount, type: "TOKEN" }],
-        services: [],
+  let result: { bookingId: string; created: boolean; tempPassword: string | null };
+  try {
+    result = await prisma.$transaction(async (tx) => {
+      // Link an existing customer (by email or phone) or create a new one. Returns
+      // a temp password when a brand-new customer account was created so we can
+      // email default credentials after the transaction commits.
+      const customer = await resolveLeadCustomer(tx, {
+        name: lead.name,
+        email: lead.email,
+        phone: lead.phone,
       });
-      const gstDeduction = computeGstDeduction([
-        { amount: tokenAmount, type: "TOKEN", gstAmount: tokenGst.gstAmount },
-      ]);
-      const profitAmount = computeBookingProfit(finance, gstDeduction);
-      await tx.bookingCommission.create({
-        data: {
-          bookingId: booking.id,
-          employeeId: performedById,
-          rateSnapshotPct: ratePct,
-          profitAmount,
-          commissionAmount: computeCommission(profitAmount, ratePct),
-        },
-      });
-    }
 
-    await tx.lead.update({
-      where: { id },
-      data: {
-        status: "CONVERTED",
-        locked: true,
-        negotiatedAmount: bookingAmount,
+      const { bookingId } = await convertLeadToBooking({
+        tx,
+        lead,
+        customerId: customer.customerId,
+        bookingAmount,
         tokenAmount,
-        booking: { connect: { id: booking.id } },
-      },
-    });
+        tokenGst,
+        paymentMethod: paymentMethod ?? null,
+        performedById,
+        performedByName,
+        creditCommission: true,
+      });
 
-    // Preserve + lock the lead's itinerary as the final canonical one. The lead↔
-    // itinerary link (Itinerary.leadId) is left intact so the converted lead keeps
-    // its itinerary; updateMany is a no-op when the lead has none.
-    await tx.itinerary.updateMany({
-      where: { leadId: id },
-      data: { locked: true, status: "CONFIRMED" },
+      return { bookingId, created: customer.created, tempPassword: customer.tempPassword };
     });
-
-    await tx.leadActivity.createMany({
-      data: [
-        {
-          leadId: id,
-          type: "STATUS_CHANGE",
-          fromStatus: lead.status,
-          toStatus: "CONVERTED",
-          performedById,
-          performedByName,
-        },
-        {
-          leadId: id,
-          type: "BOOKING_LINKED",
-          note: `Converted — booking ...${booking.id.slice(-8)}`,
-          performedById,
-          performedByName,
-        },
-      ],
-    });
-
-    return {
-      bookingId: booking.id,
-      created: customer.created,
-      tempPassword: customer.tempPassword,
-    };
-  });
+  } catch (err) {
+    if (err instanceof LeadAlreadyConvertedError) {
+      return NextResponse.json({ error: err.message }, { status: 422 });
+    }
+    throw err;
+  }
 
   // Best-effort: email default credentials when a brand-new customer was created
   // and we have an email to send them to. Never blocks/fails the conversion.

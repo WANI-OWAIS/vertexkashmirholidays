@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { computeBookingFinance, PAYMENT_STATUS_LABELS } from "@/lib/bookings/finance";
+import { computeBookingFinance, isBookingCompleted, PAYMENT_STATUS_LABELS } from "@/lib/bookings/finance";
 import { customerBookingWhere } from "@/lib/account/bookingScope";
 
 export const metadata: Metadata = { title: "My Bookings" };
@@ -44,16 +44,16 @@ export default async function AccountBookingsPage() {
       payments: { select: { amount: true, type: true } },
     },
   });
-  const bookings = rows.map((b) => ({
-    ...b,
-    paymentStatus: computeBookingFinance({
+  const bookings = rows.map((b) => {
+    const paymentStatus = computeBookingFinance({
       amount: b.amount,
       discountType: b.discountType,
       discountValue: b.discountValue,
       payments: b.payments,
       services: [],
-    }).paymentStatus,
-  }));
+    }).paymentStatus;
+    return { ...b, paymentStatus, completed: isBookingCompleted(paymentStatus, b.travelDate) };
+  });
 
   return (
     <div className="space-y-5">
@@ -79,22 +79,30 @@ export default async function AccountBookingsPage() {
                   <span className="truncate text-sm font-bold text-foreground">
                     {b.tour?.title ?? "Custom booking"}
                   </span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-[12px] font-bold",
-                      STATUS_STYLES[b.status],
-                    )}
-                  >
-                    {b.status}
-                  </span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-[12px] font-bold",
-                      PAYMENT_STATUS_STYLES[b.paymentStatus],
-                    )}
-                  >
-                    {PAYMENT_STATUS_LABELS[b.paymentStatus]}
-                  </span>
+                  {b.completed ? (
+                    <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[12px] font-bold text-emerald-700 dark:text-emerald-300">
+                      Completed
+                    </span>
+                  ) : (
+                    <>
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-2 py-0.5 text-[12px] font-bold",
+                          STATUS_STYLES[b.status],
+                        )}
+                      >
+                        {b.status}
+                      </span>
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-2 py-0.5 text-[12px] font-bold",
+                          PAYMENT_STATUS_STYLES[b.paymentStatus],
+                        )}
+                      >
+                        {PAYMENT_STATUS_LABELS[b.paymentStatus]}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Travel date:{" "}

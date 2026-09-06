@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { SITE_URL, SITE_NAME } from "@/lib/seo";
 
-export const dynamic = "force-dynamic";
+// Regenerated from Postgres at most once an hour (ISR-style) instead of on
+// every request — RSS readers poll infrequently, and the previous
+// force-dynamic setting meant every hit re-queried the blog table.
+export const revalidate = 3600;
 
 function escapeXml(s: string): string {
   return s

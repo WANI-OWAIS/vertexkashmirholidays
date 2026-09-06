@@ -43,6 +43,14 @@ export const RESET_TOKEN_TTL_MS = RESET_OTP_TTL_MS;
 // would expire before most people finish filling it out.
 export const CAREERS_TOKEN_TTL_MS = 30 * 60 * 1000;
 
+// Same "verified, proof token issued" shape, for the public B2B partner
+// registration form (src/components/b2b/B2bRegistrationForm.tsx). Same
+// reasoning as CAREERS_TOKEN_TTL_MS: the agent verifies their email inline
+// early on, then keeps filling in the rest of a multi-field application
+// (plus a logo upload) before the real submit — a short window would expire
+// before most people finish.
+export const B2B_REGISTER_TOKEN_TTL_MS = 30 * 60 * 1000;
+
 // Same "verified, proof token issued" shape, for the public booking checkout
 // (src/components/booking/BookingForm.tsx). 30 minutes covers OTP verify →
 // reviewing the trip/price → Razorpay checkout, and lines up with the

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/permissions";
 import { z } from "zod";
 import { BookingStatus } from "@prisma/client";
-import { computeBookingFinance } from "@/lib/bookings/finance";
+import { computeBookingFinance, isBookingCompleted } from "@/lib/bookings/finance";
 import { bookingWhereForUser } from "@/lib/bookings/scope";
 import type { Role } from "@/lib/rbac";
 
@@ -58,6 +58,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       amount: true,
       discountType: true,
       discountValue: true,
+      travelDate: true,
       payments: { select: { amount: true, type: true } },
       services: { select: { amount: true } },
     },
@@ -129,10 +130,16 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
   }
 
-  // ── Cancellation / refund business rules (server-authoritative) ──
-  // Both are admin-only actions, matching the UI's isAdmin-gated CANCEL/REFUND
-  // buttons — enforced here too so a SALES/EDITOR user with `bookings:edit`
-  // can't reach either transition by calling the API directly.
+  // ── Cancellation business rule (server-authoritative) ──
+  // Admin-only, matching the UI's isAdmin-gated CANCEL/REFUND buttons —
+  // enforced here too so a SALES/EDITOR user with `bookings:edit` can't reach
+  // it by calling the API directly. Both the "nothing paid" Cancel action and
+  // the "something paid, refund it" Refund action land on the same CANCELLED
+  // status (see BookingsClient.tsx) — the only thing this blocks is a
+  // *completed* booking (fully paid AND the travel date has already passed):
+  // nothing is owed either way at that point, so there's nothing left to
+  // cancel or refund. REFUNDED remains a valid status value (e.g. for
+  // historical records / direct API use) but nothing in the UI sets it anymore.
   if (status === "CANCELLED" || status === "REFUNDED") {
     if (role !== "ADMIN" && role !== "SUPERADMIN") {
       return NextResponse.json(
@@ -149,9 +156,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       payments: existing.payments,
       services: [],
     });
-    if (finance.paymentStatus !== "PARTIAL") {
+    if (isBookingCompleted(finance.paymentStatus, existing.travelDate)) {
       return NextResponse.json(
-        { error: "Only a partially paid booking can be cancelled." },
+        { error: "This booking is already completed and can no longer be cancelled." },
         { status: 422 },
       );
     }

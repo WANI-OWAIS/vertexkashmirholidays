@@ -103,6 +103,16 @@ export function trackBookingCompleted(bookingId: string, value: number, packageN
   });
 }
 
+/** Fire once, on the first field interaction with the B2B registration form. */
+export function trackB2bRegistrationStarted(): void {
+  push({ event: "b2b_registration_started" });
+}
+
+/** Fire once the B2B agent's account is created (OTP verified, agencyStatus PENDING). */
+export function trackB2bRegistrationSubmitted(): void {
+  push({ event: "b2b_registration_submitted" });
+}
+
 /** Fire when the careers listing page loads. */
 export function trackCareersViewed(): void {
   push({ event: "careers_viewed" });

@@ -38,6 +38,14 @@ import { cache } from "react";
 
 export const revalidate = 900;
 
+export async function generateStaticParams() {
+  const activities = await prisma.activity.findMany({
+    where: { published: true },
+    select: { slug: true },
+  });
+  return activities.map((a) => ({ slug: a.slug }));
+}
+
 type PageProps = { params: Promise<{ slug: string }> };
 
 const BADGE_COLORS = ["orange", "blue", "green"] as const;

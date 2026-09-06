@@ -27,6 +27,20 @@ export function computePaymentStatus(effectivePayable: number, paidAmount: numbe
   return "PARTIAL";
 }
 
+/**
+ * A booking is "completed" once it's fully paid AND the travel date has
+ * passed — the trip already happened and nothing is owed either way, so
+ * neither Cancel nor Refund has anything left to do. Single source of truth
+ * for that gate, shared by the Cancel/Refund CTA visibility (BookingsClient,
+ * BookingServicesClient), the server-side PATCH validation
+ * (api/bookings/[id]/route.ts), and the customer-facing status badge
+ * (account/bookings). A PARTIAL or PENDING booking is never "completed" here
+ * even past its travel date — there's still money to collect or refund.
+ */
+export function isBookingCompleted(paymentStatus: PaymentStatus, travelDate: Date): boolean {
+  return paymentStatus === "FULL" && travelDate.getTime() < Date.now();
+}
+
 export interface BookingFinanceInput {
   amount: number; // raw booking amount
   discountType?: string | null; // "FLAT" | "PERCENT" | null

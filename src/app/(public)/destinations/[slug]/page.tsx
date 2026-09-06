@@ -21,6 +21,7 @@ import {
 } from "@/lib/destinations/content";
 import { DestinationDetailGallery } from "@/components/destinations/DestinationDetailGallery";
 import { DestinationDetailHero } from "@/components/destinations/DestinationDetailHero";
+import { getVerifiedPropertiesCountForDestination } from "@/lib/hotelSuppliers/stats";
 import { DestinationDetailOverview } from "@/components/destinations/DestinationDetailOverview";
 import { DestinationDetailSidebar } from "@/components/destinations/DestinationDetailSidebar";
 import { DestinationDetailTabs } from "@/components/destinations/DestinationDetailTabs";
@@ -73,6 +74,7 @@ const ICON = {
   camera: "M3 3h18v18H3zM9 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4M21 15l-3.8-3.8a2 2 0 0 0-2.8 0L6 20",
   overview: "M12 12a9 9 0 1 0 0-18 9 9 0 0 0 0 18M12 8v4l2.5 2.5",
   bolt: "m13 2-2 9h4l-4 11 1-8H8l5-12Z",
+  home: "M4 11 12 4l8 7M6 10v10h5v-6h2v6h5V10",
 };
 
 const TABS = [
@@ -267,6 +269,11 @@ export default async function DestinationDetailPage({ params }: PageProps) {
 
   const heroImage = imgSrc(dest.coverImage);
 
+  // Real, DB-derived count of active B2B hotel/houseboat suppliers recorded
+  // against this destination (aggregate only — never names). Omitted
+  // entirely when there's no reliable count, rather than showing a 0.
+  const verifiedProperties = await getVerifiedPropertiesCountForDestination(dest.slug, dest.name);
+
   const stats = [
     { value: altitude, label: "Altitude", icon: ICON.altitude },
     { value: season, label: "Best Season", icon: ICON.calendar },
@@ -280,6 +287,15 @@ export default async function DestinationDetailPage({ params }: PageProps) {
       label: `${totalReviews.toLocaleString()} reviews`,
       icon: ICON.star,
     },
+    ...(verifiedProperties > 0
+      ? [
+          {
+            value: String(verifiedProperties),
+            label: verifiedProperties === 1 ? "Verified Stay" : "Verified Stays",
+            icon: ICON.home,
+          },
+        ]
+      : []),
   ];
 
   const destinationTours: DestinationTour[] = tours.map((t) => ({

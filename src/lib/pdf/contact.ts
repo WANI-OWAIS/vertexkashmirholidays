@@ -33,3 +33,13 @@ export const PDF_CONTACT = {
 };
 
 export const inr = (n: number) => `Rs. ${Math.round(n).toLocaleString("en-IN")}`;
+
+// Real social profile URLs (SiteSettings.instagram/facebook/youtube), passed
+// through to PDF generators so the footer/closing social icons can link
+// somewhere real instead of sitting as inert decoration. Optional/undefined
+// fields simply render as a non-clickable icon — never a dead link.
+export interface PdfSocialLinks {
+  instagram?: string | null;
+  facebook?: string | null;
+  youtube?: string | null;
+}

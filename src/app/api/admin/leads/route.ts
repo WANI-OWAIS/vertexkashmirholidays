@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/permissions";
 import { notifyLeadAssigned } from "@/lib/notifications";
 import { LeadSource, LeadCategory, LeadActivityType } from "@prisma/client";
+import { phoneField } from "@/lib/leads/schema";
 import {
   normalizeWhatsAppTokenParam,
   resolveWhatsAppAttributionToken,
@@ -13,7 +14,7 @@ export const dynamic = "force-dynamic";
 
 const createSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  phone: z.string().min(6, "Valid phone number required"),
+  phone: phoneField,
   email: z.string().email().optional().or(z.literal("")),
   source: z.nativeEnum(LeadSource).default(LeadSource.MANUAL),
   category: z.nativeEnum(LeadCategory).nullable().optional(),

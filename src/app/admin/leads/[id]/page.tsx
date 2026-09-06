@@ -67,7 +67,10 @@ export default async function AdminLeadDetailPage({ params }: PageProps) {
     }),
   ]);
 
-  if (!lead) notFound();
+  // B2B requests (b2bAgentId set) are managed exclusively under
+  // /admin/b2b-requests — this page's actions (assign, convert, itinerary
+  // link) all assume normal-lead semantics and must never touch a B2B row.
+  if (!lead || lead.b2bAgentId !== null) notFound();
 
   const [ipDuplicates, settings] = await Promise.all([
     lead.ipAddress

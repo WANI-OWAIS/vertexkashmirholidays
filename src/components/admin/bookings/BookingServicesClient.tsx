@@ -683,6 +683,7 @@ export function BookingServicesClient({
         payments={payments}
         gstRates={gstRates}
         balance={finance.balance}
+        travelDate={booking.travelDate}
         canEdit={canEdit}
         onAdded={(p) => setPayments((prev) => [...prev, p])}
         onUpdated={(p) => setPayments((prev) => prev.map((x) => (x.id === p.id ? p : x)))}
@@ -1702,6 +1703,7 @@ function PaymentsCard({
   payments,
   gstRates,
   balance,
+  travelDate,
   canEdit,
   onAdded,
   onUpdated,
@@ -1711,6 +1713,7 @@ function PaymentsCard({
   payments: Payment[];
   gstRates: number[];
   balance: number;
+  travelDate: string;
   canEdit: boolean;
   onAdded: (p: Payment) => void;
   onUpdated: (p: Payment) => void;
@@ -1726,9 +1729,23 @@ function PaymentsCard({
   // GST is only offered for non-cash methods (server enforces the same rule).
   const gstEligible = !isCashMethod(method);
 
-  // Once the balance is cleared, there is nothing left to collect — hide the add
-  // row and show a totals summary instead.
+  // Once the balance is cleared, there is nothing left to collect against —
+  // but a refund must still be recordable (money going back out), so this no
+  // longer hides the add-payment row entirely, only narrows its Type options
+  // to REFUND. See the effect below and the Type <select> further down.
   const fullyPaid = balance <= 0 && payments.length > 0;
+  // Mirrors isBookingCompleted (finance.ts) — fullyPaid here is equivalent to
+  // paymentStatus === "FULL". A completed booking (fully paid AND the travel
+  // date has passed) has nothing left to refund either, so the whole
+  // add-payment row — not just its Type options — is hidden below.
+  const completed = fullyPaid && new Date(travelDate).getTime() < Date.now();
+
+  // A fully paid booking can only ever add a REFUND row (TOKEN/PARTIAL/FINAL
+  // would be rejected server-side) — keep the selected type valid as
+  // fullyPaid toggles true.
+  useEffect(() => {
+    if (fullyPaid) setType("REFUND");
+  }, [fullyPaid]);
   const totalReceived = payments
     .filter((p) => p.type !== "REFUND")
     .reduce((t, p) => t + p.amount, 0);
@@ -1771,7 +1788,7 @@ function PaymentsCard({
         setMethod("Cash");
         setGstPercent("");
         setNote("");
-        setType("PARTIAL");
+        setType(fullyPaid ? "REFUND" : "PARTIAL");
       } catch {
         toast.error("An error occurred.");
       }
@@ -1820,7 +1837,7 @@ function PaymentsCard({
         </table>
       </div>
 
-      {fullyPaid ? (
+      {fullyPaid && (
         <div className="mt-4 border-t border-border pt-3 space-y-1.5">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Total Payments Received</span>
@@ -1839,10 +1856,12 @@ function PaymentsCard({
             </div>
           )}
           <div className="flex items-center gap-1.5 pt-1 text-xs font-bold text-green-600 dark:text-green-400">
-            <CheckCircle2 className="w-4 h-4" /> Fully paid — no further payment required.
+            <CheckCircle2 className="w-4 h-4" />
+            {completed ? "Fully paid — trip completed." : "Fully paid — no further collection due."}
           </div>
         </div>
-      ) : canEdit ? (
+      )}
+      {canEdit && !completed && (
         <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-border pt-3">
           <label className="w-24">
             <span className="text-[12px] font-semibold text-muted-foreground">Amount</span>
@@ -1861,9 +1880,16 @@ function PaymentsCard({
               onChange={(e) => setType(e.target.value)}
               className={`${inputCls} mt-0.5`}
             >
-              <option value="TOKEN">Token</option>
-              <option value="PARTIAL">Partial</option>
-              <option value="FINAL">Final</option>
+              {/* A fully paid booking has nothing left to collect — only a
+                  refund (money going back out) makes sense at that point;
+                  the server rejects TOKEN/PARTIAL/FINAL once balance is 0. */}
+              {!fullyPaid && (
+                <>
+                  <option value="TOKEN">Token</option>
+                  <option value="PARTIAL">Partial</option>
+                  <option value="FINAL">Final</option>
+                </>
+              )}
               <option value="REFUND">Refund</option>
             </select>
           </label>
@@ -1922,7 +1948,7 @@ function PaymentsCard({
             Add Payment
           </button>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

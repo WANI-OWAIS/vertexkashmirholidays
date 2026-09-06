@@ -3,6 +3,10 @@
 
 export type Role = "SUPERADMIN" | "ADMIN" | "DEVELOPER" | "SALES" | "EDITOR" | "CUSTOMER";
 
+// Mirrors the Prisma B2BAgentStatus enum — hand-written for the same edge-safety
+// reason as Role above (this type is used in auth.config.ts/next-auth.d.ts).
+export type B2BAgentStatus = "PENDING" | "ACTIVE" | "SUSPENDED";
+
 export const STAFF_ROLES: Role[] = ["SUPERADMIN", "ADMIN", "DEVELOPER", "SALES", "EDITOR"];
 
 export function isStaff(role?: string | null): boolean {
@@ -35,8 +39,11 @@ export const MODULES = [
   { key: "bookings", label: "Bookings", href: "/admin/bookings" },
   { key: "leads", label: "Leads", href: "/admin/leads" },
   { key: "itinerary", label: "Itineraries", href: "/admin/itinerary" },
+  { key: "proposals", label: "Proposals", href: "/admin/proposals" },
   { key: "hotelSuppliers", label: "Hotel Rates", href: "/admin/hotel-suppliers" },
   { key: "users", label: "Customers", href: "/admin/users" },
+  { key: "b2bAgents", label: "B2B Agents", href: "/admin/b2b-agents" },
+  { key: "b2bRequests", label: "B2B Requests", href: "/admin/b2b-requests" },
   { key: "employees", label: "Employees", href: "/admin/employees" },
   { key: "salary", label: "Salary", href: "/admin/salary" },
   { key: "leave", label: "Leave", href: "/admin/leave" },

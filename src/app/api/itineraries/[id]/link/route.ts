@@ -64,9 +64,11 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (type === "lead") {
     const lead = await prisma.lead.findUnique({
       where: { id: targetId },
-      select: { id: true, assignedToId: true, itinerary: { select: { id: true } } },
+      select: { id: true, assignedToId: true, b2bAgentId: true, itinerary: { select: { id: true } } },
     });
-    if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+    if (!lead || lead.b2bAgentId !== null) {
+      return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+    }
     // Same scoping as the rest of the CRM (see /api/leads/[id]) — a non-admin
     // may only link to a lead assigned to them, never link the itinerary
     // sitting in front of them onto someone else's lead.
