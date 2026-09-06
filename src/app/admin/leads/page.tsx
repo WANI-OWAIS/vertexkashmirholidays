@@ -29,12 +29,21 @@ export default async function AdminLeadsPage({ searchParams }: PageProps) {
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
 
+  // Only the first page (matching LeadsClient's default page size) is fetched
+  // server-side for a fast initial paint — every subsequent page/search/filter
+  // change is handled client-side via the already-existing, correctly
+  // paginated /api/leads endpoint, instead of the previous approach of loading
+  // (and silently capping at) the first 200 rows. The one exception is the
+  // IP-investigation view (?ip=...): that's a rare, narrow fraud-check lookup
+  // expected to return a handful of rows, so it still loads everything that
+  // matches in one shot and skips client-side pagination entirely (see
+  // LeadsClient's initialIpFilter handling).
   const [leads, staffUsers, total, todayFollowUps, converted, canCreate, canEdit, canDelete] =
     await Promise.all([
       prisma.lead.findMany({
         where: { ...scopeWhere, ...ipWhere },
         orderBy: { updatedAt: "desc" },
-        take: ipFilter ? undefined : 200,
+        take: ipFilter ? undefined : 10,
         select: {
           id: true,
           name: true,

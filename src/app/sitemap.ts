@@ -4,7 +4,10 @@ import { SITE_URL } from "@/lib/seo";
 import { TOUR_CATEGORY_META } from "@/lib/tours/categories";
 import { ORIGIN_CITIES } from "@/lib/originCities";
 
-export const dynamic = "force-dynamic";
+// Regenerated from Postgres at most once an hour (ISR-style) instead of on
+// every crawl — search engines don't need sub-hour freshness here, and the
+// previous force-dynamic setting meant every hit re-ran all 7 queries below.
+export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const [tours, destinations, blogs, campaigns, activities, jobs, tourCategoryRows] =

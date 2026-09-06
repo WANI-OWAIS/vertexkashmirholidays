@@ -59,8 +59,9 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get("status")?.trim();
   const source = searchParams.get("source")?.trim();
   const assignedToId = searchParams.get("assignedToId")?.trim();
+  const search = searchParams.get("search")?.trim() ?? "";
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1"));
-  const take = 30;
+  const take = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") ?? "30")));
   const skip = (page - 1) * take;
 
   // B2B requests (b2bAgentId set) live exclusively under /api/admin/b2b-requests
@@ -73,13 +74,24 @@ export async function GET(req: NextRequest) {
   if (status && status !== "ALL") where.status = status as Prisma.LeadWhereInput["status"];
   if (source && source !== "ALL") where.source = source as Prisma.LeadWhereInput["source"];
   if (isAdminOrSuper && assignedToId && assignedToId !== "ALL") {
-    where.assignedToId = assignedToId;
+    where.assignedToId = assignedToId === "UNASSIGNED" ? null : assignedToId;
+  }
+  if (search) {
+    where.OR = [
+      { name: { contains: search, mode: "insensitive" } },
+      { phone: { contains: search } },
+      { email: { contains: search, mode: "insensitive" } },
+      { id: { contains: search, mode: "insensitive" } },
+    ];
   }
 
   const [leads, total] = await Promise.all([
     prisma.lead.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      // Matches the admin Leads list's display order (most recently touched
+      // lead first) — not createdAt, which would reorder rows the moment a
+      // filter/search request replaces the initial server-rendered page.
+      orderBy: { updatedAt: "desc" },
       take,
       skip,
       select: {

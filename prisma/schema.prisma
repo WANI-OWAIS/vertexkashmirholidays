@@ -616,6 +616,7 @@ model Booking {
   @@index([createdAt])
   @@index([deletedAt, createdAt])
   @@index([guestEmail])
+  @@index([status, createdAt])
 }
 
 // A single payment entry against a booking — the booking payment ledger.
@@ -698,6 +699,7 @@ model BookingCommission {
   @@index([employeeId])
   @@index([status])
   @@index([salaryRecordId])
+  @@index([employeeId, status, earnedAt])
 }
 
 // One payroll record per employee per calendar month (salaryMonth = "2026-08",
@@ -859,6 +861,8 @@ model Lead {
   @@index([assignedToId])
   @@index([createdAt])
   @@index([followUpAt])
+  @@index([assignedToId, createdAt])
+  @@index([status, createdAt])
   // Public-form dedupe looks up the most recent lead by normalized phone/email.
   @@index([phone])
   @@index([email])

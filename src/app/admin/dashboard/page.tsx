@@ -22,12 +22,12 @@ import {
   Settings,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { requireModuleView } from "@/lib/admin/moduleGuard";
 import { bookingWhereForUser } from "@/lib/bookings/scope";
 import { RevenueChart } from "@/components/admin/RevenueChartLazy";
-import { computeBookingFinance, type PaymentStatus } from "@/lib/bookings/finance";
+import { computeBookingFinance, round2, type PaymentStatus } from "@/lib/bookings/finance";
 
 export const metadata: Metadata = { title: "Dashboard — Admin" };
 export const dynamic = "force-dynamic";
@@ -171,6 +171,49 @@ export default async function AdminDashboard() {
     ...(isAdmin ? {} : { assignedToId: userId }),
   };
 
+  // Revenue must reflect money actually collected, not the lifecycle `status`
+  // field — `status: PAID` is set only by the Razorpay webhook/reconcile path
+  // (see src/lib/bookings/online-payment.ts) and never by manually-recorded
+  // offline/cash payments, so a fully-paid booking can legitimately sit at
+  // CONFIRMED forever. Every other booking-money view in this app (admin/
+  // bookings list, invoices) already derives the real figure from the payment
+  // ledger via computeBookingFinance() — and per that helper's own doc
+  // comment, "money actually collected" for a booking is just the net of its
+  // payments (non-REFUND minus REFUND), independent of amount/discount. That
+  // means it can be summed directly in Postgres (SUM/GROUP BY) below instead
+  // of loading every in-scope booking's full payments array into memory and
+  // reducing it in JavaScript, which is what this page used to do for every
+  // booking ever made.
+  const netPaidExpr = Prisma.sql`CASE WHEN p."type" = 'REFUND' THEN -p."amount" ELSE p."amount" END`;
+  // Booking-visibility scope (see bookingWhereForUser) re-expressed as a SQL
+  // fragment for the raw aggregations below — ADMIN/SUPERADMIN see every
+  // booking; every other role only sees bookings converted from a lead
+  // assigned to them, or any B2B-converted booking (no per-agent assignee).
+  const scopeSql = isAdmin
+    ? Prisma.sql`TRUE`
+    : Prisma.sql`EXISTS (
+        SELECT 1 FROM "Lead" l
+        WHERE l."bookingId" = b.id
+          AND (l."assignedToId" = ${userId} OR l."b2bAgentId" IS NOT NULL)
+      )`;
+
+  // Last 6 calendar months (oldest first) — same boundaries the chart always
+  // used, computed here so the raw query below can bound its scan to exactly
+  // this window instead of scanning every booking ever made.
+  const months = Array.from({ length: 6 }, (_, i) => {
+    const start = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+    const label =
+      start.toLocaleString("en-IN", { month: "short" }) + " '" + String(start.getFullYear()).slice(2);
+    return { start, end, label };
+  });
+  const monthBucketCase = Prisma.join(
+    months.map(
+      (m, i) => Prisma.sql`WHEN b."createdAt" >= ${m.start} AND b."createdAt" < ${m.end} THEN ${i}`,
+    ),
+    " ",
+  );
+
   const [
     totalBookings,
     thisMonthBookings,
@@ -181,7 +224,9 @@ export default async function AdminDashboard() {
     recentBookingsRaw,
     recentLeads,
     pendingReviews,
-    allBookingsForFinance,
+    revenueByMonthRaw,
+    totalsRaw,
+    topToursRaw,
   ] = await Promise.all([
     prisma.booking.count({ where: bookingScope }),
     prisma.booking.count({ where: { ...bookingScope, createdAt: { gte: startOfMonth } } }),
@@ -224,64 +269,66 @@ export default async function AdminDashboard() {
         tour: { select: { title: true } },
       },
     }),
-    // Revenue must reflect money actually collected, not the lifecycle
-    // `status` field — `status: PAID` is set only by the Razorpay
-    // webhook/reconcile path (see src/lib/bookings/online-payment.ts) and
-    // never by manually-recorded offline/cash payments, so a fully-paid
-    // booking can legitimately sit at CONFIRMED forever. Every other
-    // booking-money view in this app (admin/bookings list, invoices) already
-    // derives the real figure from the payment ledger via
-    // computeBookingFinance() — this fetches what that needs for every
-    // in-scope booking instead of pre-filtering by status.
-    prisma.booking.findMany({
-      where: bookingScope,
-      select: {
-        amount: true,
-        createdAt: true,
-        tourId: true,
-        payments: { select: { amount: true, type: true } },
-      },
-    }),
+    // Bounded to the 6-month window — only the rows the chart can show.
+    prisma.$queryRaw<{ bucket: number; revenue: number }[]>(Prisma.sql`
+      SELECT CASE ${monthBucketCase} END AS bucket,
+             COALESCE(SUM(${netPaidExpr}), 0)::float8 AS revenue
+      FROM "Booking" b
+      LEFT JOIN "BookingPayment" p ON p."bookingId" = b.id
+      WHERE b."deletedAt" IS NULL
+        AND b."createdAt" >= ${months[0].start}
+        AND b."createdAt" < ${months[5].end}
+        AND ${scopeSql}
+      GROUP BY 1
+    `),
+    // All-time total revenue + count of paid bookings — a single aggregated
+    // row instead of every in-scope booking loaded and reduced in JS.
+    prisma.$queryRaw<{ totalRevenue: number; paidCount: number }[]>(Prisma.sql`
+      SELECT COALESCE(SUM(net), 0)::float8 AS "totalRevenue",
+             COUNT(*) FILTER (WHERE net > 0)::int AS "paidCount"
+      FROM (
+        SELECT b.id, COALESCE(SUM(${netPaidExpr}), 0) AS net
+        FROM "Booking" b
+        LEFT JOIN "BookingPayment" p ON p."bookingId" = b.id
+        WHERE b."deletedAt" IS NULL AND ${scopeSql}
+        GROUP BY b.id
+      ) t
+    `),
+    // Top 5 tours by all-time net revenue — ranked and limited in the
+    // database; only the winning 5 rows ever leave Postgres.
+    prisma.$queryRaw<{ tourId: string; revenue: number; bookingCount: number }[]>(Prisma.sql`
+      SELECT b."tourId" AS "tourId",
+             SUM(${netPaidExpr})::float8 AS revenue,
+             COUNT(DISTINCT b.id)::int AS "bookingCount"
+      FROM "Booking" b
+      JOIN "BookingPayment" p ON p."bookingId" = b.id
+      WHERE b."deletedAt" IS NULL AND b."tourId" IS NOT NULL AND ${scopeSql}
+      GROUP BY b."tourId"
+      HAVING SUM(${netPaidExpr}) > 0
+      ORDER BY revenue DESC
+      LIMIT 5
+    `),
   ]);
 
-  // Net amount actually received per booking (collections minus refunds) —
-  // discount/services aren't relevant to "money collected" so they're passed
-  // empty/null here; see computeBookingFinance's own doc comment.
-  const paidAmountOf = (b: { amount: number; payments: { amount: number; type: string | null }[] }) =>
-    computeBookingFinance({ amount: b.amount, payments: b.payments, services: [] }).paidAmount;
-
-  const allBookingsFinance = allBookingsForFinance.map((b) => ({ ...b, paidAmount: paidAmountOf(b) }));
   const recentBookings = recentBookingsRaw.map((b) => ({
     ...b,
     paymentStatus: computeBookingFinance({ amount: b.amount, payments: b.payments, services: [] })
       .paymentStatus,
   }));
 
-  // Revenue by month — last 6 months
-  const revenueByMonth = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
-    const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    const label =
-      d.toLocaleString("en-IN", { month: "short" }) + " '" + String(d.getFullYear()).slice(2);
-    const revenue = allBookingsFinance
-      .filter((b) => b.createdAt >= d && b.createdAt < nextMonth)
-      .reduce((s, b) => s + b.paidAmount, 0);
-    return { month: label, revenue };
-  });
+  // Revenue by month — bucketed in Postgres above; fill in any month with no
+  // matching rows as 0, same as the previous in-memory reduce.
+  const revenueByMonth = months.map((m, i) => ({
+    month: m.label,
+    revenue: round2(revenueByMonthRaw.find((r) => r.bucket === i)?.revenue ?? 0),
+  }));
 
-  // Top tours
+  // Top tours — already ranked and limited to 5 by the database.
   const tourRevMap: Record<string, { revenue: number; count: number }> = {};
-  for (const b of allBookingsFinance) {
-    if (!b.tourId || b.paidAmount <= 0) continue; // lead-converted bookings have no tour; unpaid ones don't rank
-    const e = tourRevMap[b.tourId] ?? { revenue: 0, count: 0 };
-    e.revenue += b.paidAmount;
-    e.count += 1;
-    tourRevMap[b.tourId] = e;
+  for (const r of topToursRaw) {
+    tourRevMap[r.tourId] = { revenue: round2(r.revenue), count: r.bookingCount };
   }
-  const topTourIds = Object.entries(tourRevMap)
-    .sort((a, b) => b[1].revenue - a[1].revenue)
-    .slice(0, 5)
-    .map(([id]) => id);
+  const topTourIds = topToursRaw.map((r) => r.tourId);
 
   const topTourDetails = topTourIds.length
     ? await prisma.tour.findMany({
@@ -316,14 +363,13 @@ export default async function AdminDashboard() {
       })
     : topTourDetails.map((t) => ({ ...t, bookingCount: 0, revenue: 0 }));
 
-  const totalRevenue = allBookingsFinance.reduce((s, b) => s + b.paidAmount, 0);
-  const thisMonthRev = allBookingsFinance
-    .filter((b) => b.createdAt >= startOfMonth)
-    .reduce((s, b) => s + b.paidAmount, 0);
-  const lastMonthRev = allBookingsFinance
-    .filter((b) => b.createdAt >= startOfLastMonth && b.createdAt < startOfMonth)
-    .reduce((s, b) => s + b.paidAmount, 0);
-  const paidCount = allBookingsFinance.filter((b) => b.paidAmount > 0).length;
+  const totalRevenue = round2(totalsRaw[0]?.totalRevenue ?? 0);
+  const paidCount = totalsRaw[0]?.paidCount ?? 0;
+  // The 6-month chart's last two buckets are exactly "this month" and "last
+  // month" by construction (see `months` above) — reused here instead of a
+  // separate all-bookings scan.
+  const thisMonthRev = revenueByMonth[5].revenue;
+  const lastMonthRev = revenueByMonth[4].revenue;
   const conversionRate = totalLeads > 0 ? Math.round((paidCount / totalLeads) * 1000) / 10 : 0;
   const avgBooking = paidCount > 0 ? Math.round(totalRevenue / paidCount) : 0;
 

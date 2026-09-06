@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -121,12 +121,18 @@ export function LeadsClient({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [sourceFilter, setSourceFilter] = useState("ALL");
   const [assigneeFilter, setAssigneeFilter] = useState("ALL");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const filtered = initialLeads.filter((l) => {
+  // The IP-investigation view (?ip=...) is a rare, narrow fraud-check lookup:
+  // admin/leads/page.tsx loads every matching row up front (no cap, no
+  // pagination) since the result set is expected to be tiny, and this stays
+  // exactly as it was — client-filtered/paginated over that fixed snapshot.
+  const isIpMode = !!initialIpFilter;
+  const filteredForIpMode = initialLeads.filter((l) => {
     if (statusFilter !== "ALL" && l.status !== statusFilter) return false;
     if (sourceFilter !== "ALL" && l.source !== sourceFilter) return false;
     if (isAdmin && assigneeFilter !== "ALL") {
@@ -145,9 +151,87 @@ export function LeadsClient({
     }
     return true;
   });
+  const ipPagination = usePagination(filteredForIpMode);
 
-  const { page, setPage, pageSize, changePageSize, pageCount, total, pageItems } =
-    usePagination(filtered);
+  // Normal (non-IP-filtered) mode: server-paginated. The list previously
+  // capped at the first 200 rows (fetched once, filtered/paginated in the
+  // browser), silently hiding anything older and making search unable to find
+  // records beyond that snapshot. This now calls the already-existing,
+  // correctly paginated /api/leads endpoint for every page/search/filter
+  // change — the initial page still renders instantly from the
+  // server-fetched props below, no fetch needed on first paint.
+  const [leads, setLeads] = useState(initialLeads);
+  const [total, setTotal] = useState(totalCount);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [loading, setLoading] = useState(false);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const hasMounted = useRef(false);
+
+  // Debounce search input — avoids a network round trip on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Any filter change should jump back to page 1, same as the old client-side
+  // pagination's auto-clamp when the filtered set shrank.
+  useEffect(() => {
+    if (isIpMode) return;
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, statusFilter, sourceFilter, assigneeFilter]);
+
+  async function fetchLeads() {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (statusFilter !== "ALL") params.set("status", statusFilter);
+      if (sourceFilter !== "ALL") params.set("source", sourceFilter);
+      if (isAdmin && assigneeFilter !== "ALL") params.set("assignedToId", assigneeFilter);
+      if (debouncedSearch) params.set("search", debouncedSearch);
+      const res = await fetch(`/api/leads?${params.toString()}`);
+      if (!res.ok) throw new Error();
+      const data = (await res.json()) as { leads: Lead[]; total: number };
+      setLeads(data.leads);
+      setTotal(data.total);
+    } catch {
+      toast.error("Failed to load leads.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isIpMode) return;
+    // Skip the redundant fetch on first mount — initialLeads/totalCount
+    // already came from the server render.
+    if (!hasMounted.current) {
+      hasMounted.current = true;
+      return;
+    }
+    fetchLeads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, statusFilter, sourceFilter, assigneeFilter, debouncedSearch]);
+
+  function changePageSize(n: number) {
+    setPageSize(n);
+    setPage(1);
+  }
+
+  const pageItems = isIpMode ? ipPagination.pageItems : leads;
+  const resultsCount = isIpMode ? filteredForIpMode.length : total;
+  const isEmpty = isIpMode ? filteredForIpMode.length === 0 : leads.length === 0;
+  const paginationProps = isIpMode
+    ? {
+        page: ipPagination.page,
+        pageSize: ipPagination.pageSize,
+        pageCount: ipPagination.pageCount,
+        total: ipPagination.total,
+        onPage: ipPagination.setPage,
+        onPageSize: ipPagination.changePageSize,
+      }
+    : { page, pageSize, pageCount, total, onPage: setPage, onPageSize: changePageSize };
 
   function handleDelete(id: string) {
     startTransition(async () => {
@@ -156,6 +240,9 @@ export function LeadsClient({
         if (!res.ok) throw new Error();
         toast.success("Lead deleted.");
         router.refresh();
+        // In server-paginated mode `leads` is client state, not re-derived
+        // from props — router.refresh() alone won't drop the deleted row.
+        if (!isIpMode) fetchLeads();
       } catch {
         toast.error("Failed to delete lead.");
       } finally {
@@ -283,12 +370,12 @@ export function LeadsClient({
           )}
 
           <p className="text-xs text-muted-foreground self-center shrink-0">
-            {filtered.length} results
+            {resultsCount} results{!isIpMode && loading ? " · loading…" : ""}
           </p>
         </div>
 
         {/* Table */}
-        <div className="overflow-x-auto">
+        <div className={cn("overflow-x-auto", !isIpMode && loading && "opacity-60 pointer-events-none")}>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-muted border-t border-b border-border">
@@ -305,7 +392,7 @@ export function LeadsClient({
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {filtered.length === 0 ? (
+              {isEmpty ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground text-sm">
                     {search || statusFilter !== "ALL" || sourceFilter !== "ALL"
@@ -448,15 +535,7 @@ export function LeadsClient({
           </table>
         </div>
 
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
-          pageCount={pageCount}
-          total={total}
-          onPage={setPage}
-          onPageSize={changePageSize}
-          noun="leads"
-        />
+        <TablePagination {...paginationProps} noun="leads" />
       </div>
     </div>
   );
