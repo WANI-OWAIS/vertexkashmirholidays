@@ -19,7 +19,9 @@ export default async function AdminLeadsPage({ searchParams }: PageProps) {
   const userId = session?.user?.id ?? "";
   const isAdminOrSuper = role === "SUPERADMIN" || role === "ADMIN";
 
-  const scopeWhere = isAdminOrSuper ? {} : { assignedToId: userId };
+  // B2B requests (b2bAgentId set) live exclusively under /admin/b2b-requests —
+  // excluded here so they never mix into the normal lead workflow/stats.
+  const scopeWhere = { b2bAgentId: null, ...(isAdminOrSuper ? {} : { assignedToId: userId }) };
   const ipWhere = ipFilter ? { ipAddress: ipFilter } : {};
 
   const today = new Date();

@@ -8,6 +8,7 @@ import { itineraryDataSchema } from "@/types/itinerary";
 import { applyLeadFactsToItinerary } from "@/lib/itinerary/lead-defaults";
 import { isAdminRole } from "@/lib/itinerary/access";
 import { notifyLeadAssigned, notifyLeadUnassigned } from "@/lib/notifications";
+import { phoneField } from "@/lib/leads/schema";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -28,7 +29,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
       },
     },
   });
-  if (!lead) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // B2B requests are managed exclusively via /api/admin/b2b-requests — this
+  // endpoint assumes normal-lead semantics and must never touch a B2B row.
+  if (!lead || lead.b2bAgentId !== null) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // SALES users can only view leads assigned to them.
   const role = (guard.user as { role: string }).role;
@@ -41,7 +44,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
 const patchSchema = z.object({
   name: z.string().min(1, "Name is required").optional(),
-  phone: z.string().min(6, "Valid phone number required").optional(),
+  phone: phoneField.optional(),
   email: z.string().email("Enter a valid email").nullable().optional(),
   source: z.nativeEnum(LeadSource).optional(),
   status: z.nativeEnum(LeadStatus).optional(),
@@ -67,7 +70,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     where: { id },
     include: { itinerary: { select: { id: true, title: true, locked: true, data: true } } },
   });
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!existing || existing.b2bAgentId !== null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   // Access split: an admin's only lead power is (re)assignment; every other lead
   // change (status, details, notes, follow-up, booking link, amounts) belongs to
@@ -365,7 +370,9 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
 
   const { id } = await params;
   const existing = await prisma.lead.findUnique({ where: { id } });
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!existing || existing.b2bAgentId !== null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   // Converted leads are permanent business records and cannot be deleted.
   if (existing.status === LeadStatus.CONVERTED) {

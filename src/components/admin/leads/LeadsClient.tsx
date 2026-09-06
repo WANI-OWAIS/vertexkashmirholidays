@@ -24,6 +24,10 @@ import { AdminSearchInput } from "@/components/ui/molecules/admin-search-input";
 import { StatCard } from "@/components/ui/molecules/stat-card";
 import { InlineConfirmActions } from "@/components/ui/organisms/inline-confirm-actions";
 
+// IN_PROGRESS is a real LeadStatus value at the type level (B2B-request-only —
+// see prisma/schema.prisma), included so this type structurally matches
+// Prisma's Lead.status; the query feeding this page excludes B2B rows (see
+// admin/leads/page.tsx), so it never actually renders here.
 type LeadStatus =
   | "NEW"
   | "CONNECTED"
@@ -31,6 +35,7 @@ type LeadStatus =
   | "QUALIFIED"
   | "NEGOTIATION"
   | "ON_HOLD"
+  | "IN_PROGRESS"
   | "CONVERTED"
   | "REJECTED";
 type LeadSource = "WEBSITE" | "MANUAL" | "GOOGLE_ADS" | "META_ADS" | "THIRD_PARTY" | "REFERRAL";
@@ -86,6 +91,9 @@ const STATUS_STYLES: Record<LeadStatus, string> = {
   QUALIFIED: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
   NEGOTIATION: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
   ON_HOLD: "bg-muted text-muted-foreground",
+  // B2B-request-only value — never actually rendered here (see comment on the
+  // LeadStatus type above), present only so this Record type-checks.
+  IN_PROGRESS: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
   CONVERTED: "bg-green-500/15 text-green-700 dark:text-green-300",
   REJECTED: "bg-red-500/15 text-red-700 dark:text-red-300",
 };

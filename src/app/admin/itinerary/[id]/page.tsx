@@ -39,6 +39,7 @@ export default async function EditItineraryPage({ params }: { params: Promise<{ 
           children: true,
           startDate: true,
           endDate: true,
+          b2bAgentId: true,
         },
       },
       booking: {
@@ -54,7 +55,10 @@ export default async function EditItineraryPage({ params }: { params: Promise<{ 
       },
     },
   });
-  if (!record) notFound();
+  // B2B itineraries live at /admin/b2b-itineraries/[id] — this page's
+  // resolveItineraryAccess() has no B2B concept (and would incorrectly let an
+  // admin merely view, never edit, a B2B row via its assignee-based rule).
+  if (!record || record.lead?.b2bAgentId != null) notFound();
 
   const access = resolveItineraryAccess(record, { id: session!.user.id, role });
   if (!access.canView) redirect("/admin/itinerary");
@@ -171,6 +175,11 @@ export default async function EditItineraryPage({ params }: { params: Promise<{ 
         isBookingLinked={!!record.bookingId}
         companyAddress={companyAddress}
         trustContent={trustContent}
+        socialLinks={{
+          instagram: settings?.instagram,
+          facebook: settings?.facebook,
+          youtube: settings?.youtube,
+        }}
       />
     </div>
   );

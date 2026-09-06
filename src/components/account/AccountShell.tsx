@@ -3,12 +3,20 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
-import { LayoutDashboard, CalendarDays, CreditCard, Star, UserCircle, LogOut } from "lucide-react";
+import {
+  LayoutDashboard,
+  CalendarDays,
+  CreditCard,
+  Star,
+  UserCircle,
+  LogOut,
+  ClipboardList,
+} from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
 import { ThemeToggle } from "@/components/ui/atoms/ThemeToggle";
 import { cn } from "@/lib/utils";
 
-const NAV = [
+const BASE_NAV = [
   { href: "/account", label: "Overview", short: "Overview", Icon: LayoutDashboard },
   { href: "/account/bookings", label: "My Bookings", short: "Bookings", Icon: CalendarDays },
   { href: "/account/payments", label: "Payments", short: "Payments", Icon: CreditCard },
@@ -16,14 +24,25 @@ const NAV = [
   { href: "/account/profile", label: "Profile", short: "Profile", Icon: UserCircle },
 ];
 
+// Shown only to B2B agents (agencyStatus set — any status, this is read-only
+// history, see /account/requests). Normal customers never see this item.
+const B2B_NAV_ITEM = {
+  href: "/account/requests",
+  label: "My Requests",
+  short: "Requests",
+  Icon: ClipboardList,
+};
+
 interface AccountShellProps {
   children: React.ReactNode;
   userName: string;
   userEmail: string;
+  isB2bAgent?: boolean;
 }
 
-export function AccountShell({ children, userName, userEmail }: AccountShellProps) {
+export function AccountShell({ children, userName, userEmail, isB2bAgent = false }: AccountShellProps) {
   const pathname = usePathname();
+  const NAV = isB2bAgent ? [BASE_NAV[0], B2B_NAV_ITEM, ...BASE_NAV.slice(1)] : BASE_NAV;
 
   return (
     <div className="min-h-screen bg-background">

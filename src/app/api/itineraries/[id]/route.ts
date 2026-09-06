@@ -18,7 +18,7 @@ const ACCESS_SELECT = {
   locked: true,
   title: true,
   data: true,
-  lead: { select: { assignedToId: true, locked: true } },
+  lead: { select: { assignedToId: true, locked: true, b2bAgentId: true } },
   booking: { select: { servicesLocked: true } },
 } as const;
 
@@ -44,11 +44,17 @@ export async function GET(_req: NextRequest, { params }: Params) {
     where: { id },
     include: {
       owner: { select: { name: true, email: true } },
-      lead: { select: { id: true, assignedToId: true, locked: true } },
+      lead: { select: { id: true, assignedToId: true, locked: true, b2bAgentId: true } },
       booking: { select: { servicesLocked: true } },
     },
   });
-  if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // B2B itineraries are managed exclusively via /api/admin/b2b-itineraries —
+  // this route's resolveItineraryAccess() has no B2B concept, so a B2B row
+  // must never reach it (an admin's view-any-lead bypass would otherwise let
+  // one through).
+  if (!record || record.lead?.b2bAgentId != null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const access = resolveItineraryAccess(record, { id: guard.user.id, role: guard.user.role });
   if (!access.canView) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -81,7 +87,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
   const { id } = await params;
   const existing = await prisma.itinerary.findUnique({ where: { id }, select: ACCESS_SELECT });
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // B2B itineraries are managed exclusively via /api/admin/b2b-itineraries.
+  if (!existing || existing.lead?.b2bAgentId != null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const access = resolveItineraryAccess(existing, { id: guard.user.id, role: guard.user.role });
   if (!access.canView) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -167,7 +176,10 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
 
   const { id } = await params;
   const existing = await prisma.itinerary.findUnique({ where: { id }, select: ACCESS_SELECT });
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // B2B itineraries are managed exclusively via /api/admin/b2b-itineraries.
+  if (!existing || existing.lead?.b2bAgentId != null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const access = resolveItineraryAccess(existing, { id: guard.user.id, role: guard.user.role });
   if (!access.canView) return NextResponse.json({ error: "Forbidden" }, { status: 403 });

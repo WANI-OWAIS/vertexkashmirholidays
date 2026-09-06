@@ -22,11 +22,12 @@ import {
   Settings,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
-import { BookingStatus, type Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { requireModuleView } from "@/lib/admin/moduleGuard";
 import { bookingWhereForUser } from "@/lib/bookings/scope";
 import { RevenueChart } from "@/components/admin/RevenueChartLazy";
+import { computeBookingFinance, type PaymentStatus } from "@/lib/bookings/finance";
 
 export const metadata: Metadata = { title: "Dashboard — Admin" };
 export const dynamic = "force-dynamic";
@@ -75,6 +76,29 @@ const STATUS_STYLES: Record<
     className: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
     Icon: AlertCircle,
   },
+  // CONFIRMED was missing here, so every confirmed booking silently fell
+  // through to the PENDING fallback below — a booking can be CONFIRMED
+  // (going ahead) independent of how much has actually been paid, see
+  // PAYMENT_STATUS_STYLES for the money-received signal shown alongside it.
+  CONFIRMED: {
+    label: "Confirmed",
+    className: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
+    Icon: CheckCircle2,
+  },
+};
+
+// Derived "how much has actually been paid" — kept separate from the booking
+// lifecycle status above, same as src/lib/bookings/finance.ts's own
+// PaymentStatus type (never stored, always computed from the payment ledger).
+const PAYMENT_STATUS_STYLES: Record<PaymentStatus, string> = {
+  FULL: "bg-green-500/15 text-green-700 dark:text-green-300",
+  PARTIAL: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  PENDING: "bg-muted text-muted-foreground",
+};
+const PAYMENT_STATUS_LABELS_SHORT: Record<PaymentStatus, string> = {
+  FULL: "Paid in full",
+  PARTIAL: "Partially paid",
+  PENDING: "Unpaid",
 };
 
 const LEAD_STATUS_STYLES: Record<string, string> = {
@@ -140,40 +164,25 @@ export default async function AdminDashboard() {
   // and leads assigned to them — same ownership rule as the Bookings and
   // Leads pages, applied here too so the dashboard isn't an org-wide leak.
   const bookingScope: Prisma.BookingWhereInput = { deletedAt: null, ...bookingWhereForUser(role, userId) };
-  const leadScope: Prisma.LeadWhereInput = isAdmin ? {} : { assignedToId: userId };
+  // B2B requests (b2bAgentId set) are tracked separately (see /admin/b2b-requests)
+  // and excluded from normal-lead dashboard stats.
+  const leadScope: Prisma.LeadWhereInput = {
+    b2bAgentId: null,
+    ...(isAdmin ? {} : { assignedToId: userId }),
+  };
 
   const [
-    revenueAgg,
-    thisMonthRevAgg,
-    lastMonthRevAgg,
     totalBookings,
     thisMonthBookings,
     lastMonthBookings,
     totalLeads,
     thisMonthLeads,
     lastMonthLeads,
-    paidCount,
-    recentBookings,
+    recentBookingsRaw,
     recentLeads,
     pendingReviews,
-    allPaidBookings,
+    allBookingsForFinance,
   ] = await Promise.all([
-    prisma.booking.aggregate({
-      where: { ...bookingScope, status: BookingStatus.PAID },
-      _sum: { amount: true },
-    }),
-    prisma.booking.aggregate({
-      where: { ...bookingScope, status: BookingStatus.PAID, createdAt: { gte: startOfMonth } },
-      _sum: { amount: true },
-    }),
-    prisma.booking.aggregate({
-      where: {
-        ...bookingScope,
-        status: BookingStatus.PAID,
-        createdAt: { gte: startOfLastMonth, lt: startOfMonth },
-      },
-      _sum: { amount: true },
-    }),
     prisma.booking.count({ where: bookingScope }),
     prisma.booking.count({ where: { ...bookingScope, createdAt: { gte: startOfMonth } } }),
     prisma.booking.count({
@@ -184,7 +193,6 @@ export default async function AdminDashboard() {
     prisma.lead.count({
       where: { ...leadScope, createdAt: { gte: startOfLastMonth, lt: startOfMonth } },
     }),
-    prisma.booking.count({ where: { ...bookingScope, status: BookingStatus.PAID } }),
     prisma.booking.findMany({
       where: bookingScope,
       take: 8,
@@ -195,6 +203,7 @@ export default async function AdminDashboard() {
         amount: true,
         createdAt: true,
         tour: { select: { title: true, coverImage: true, slug: true } },
+        payments: { select: { amount: true, type: true } },
       },
     }),
     prisma.lead.findMany({
@@ -215,11 +224,38 @@ export default async function AdminDashboard() {
         tour: { select: { title: true } },
       },
     }),
+    // Revenue must reflect money actually collected, not the lifecycle
+    // `status` field — `status: PAID` is set only by the Razorpay
+    // webhook/reconcile path (see src/lib/bookings/online-payment.ts) and
+    // never by manually-recorded offline/cash payments, so a fully-paid
+    // booking can legitimately sit at CONFIRMED forever. Every other
+    // booking-money view in this app (admin/bookings list, invoices) already
+    // derives the real figure from the payment ledger via
+    // computeBookingFinance() — this fetches what that needs for every
+    // in-scope booking instead of pre-filtering by status.
     prisma.booking.findMany({
-      where: { ...bookingScope, status: BookingStatus.PAID },
-      select: { amount: true, createdAt: true, tourId: true },
+      where: bookingScope,
+      select: {
+        amount: true,
+        createdAt: true,
+        tourId: true,
+        payments: { select: { amount: true, type: true } },
+      },
     }),
   ]);
+
+  // Net amount actually received per booking (collections minus refunds) —
+  // discount/services aren't relevant to "money collected" so they're passed
+  // empty/null here; see computeBookingFinance's own doc comment.
+  const paidAmountOf = (b: { amount: number; payments: { amount: number; type: string | null }[] }) =>
+    computeBookingFinance({ amount: b.amount, payments: b.payments, services: [] }).paidAmount;
+
+  const allBookingsFinance = allBookingsForFinance.map((b) => ({ ...b, paidAmount: paidAmountOf(b) }));
+  const recentBookings = recentBookingsRaw.map((b) => ({
+    ...b,
+    paymentStatus: computeBookingFinance({ amount: b.amount, payments: b.payments, services: [] })
+      .paymentStatus,
+  }));
 
   // Revenue by month — last 6 months
   const revenueByMonth = Array.from({ length: 6 }, (_, i) => {
@@ -227,18 +263,18 @@ export default async function AdminDashboard() {
     const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const label =
       d.toLocaleString("en-IN", { month: "short" }) + " '" + String(d.getFullYear()).slice(2);
-    const revenue = allPaidBookings
+    const revenue = allBookingsFinance
       .filter((b) => b.createdAt >= d && b.createdAt < nextMonth)
-      .reduce((s, b) => s + b.amount, 0);
+      .reduce((s, b) => s + b.paidAmount, 0);
     return { month: label, revenue };
   });
 
   // Top tours
   const tourRevMap: Record<string, { revenue: number; count: number }> = {};
-  for (const b of allPaidBookings) {
-    if (!b.tourId) continue; // lead-converted bookings have no tour
+  for (const b of allBookingsFinance) {
+    if (!b.tourId || b.paidAmount <= 0) continue; // lead-converted bookings have no tour; unpaid ones don't rank
     const e = tourRevMap[b.tourId] ?? { revenue: 0, count: 0 };
-    e.revenue += b.amount;
+    e.revenue += b.paidAmount;
     e.count += 1;
     tourRevMap[b.tourId] = e;
   }
@@ -280,9 +316,14 @@ export default async function AdminDashboard() {
       })
     : topTourDetails.map((t) => ({ ...t, bookingCount: 0, revenue: 0 }));
 
-  const totalRevenue = revenueAgg._sum.amount ?? 0;
-  const thisMonthRev = thisMonthRevAgg._sum.amount ?? 0;
-  const lastMonthRev = lastMonthRevAgg._sum.amount ?? 0;
+  const totalRevenue = allBookingsFinance.reduce((s, b) => s + b.paidAmount, 0);
+  const thisMonthRev = allBookingsFinance
+    .filter((b) => b.createdAt >= startOfMonth)
+    .reduce((s, b) => s + b.paidAmount, 0);
+  const lastMonthRev = allBookingsFinance
+    .filter((b) => b.createdAt >= startOfLastMonth && b.createdAt < startOfMonth)
+    .reduce((s, b) => s + b.paidAmount, 0);
+  const paidCount = allBookingsFinance.filter((b) => b.paidAmount > 0).length;
   const conversionRate = totalLeads > 0 ? Math.round((paidCount / totalLeads) * 1000) / 10 : 0;
   const avgBooking = paidCount > 0 ? Math.round(totalRevenue / paidCount) : 0;
 
@@ -451,11 +492,18 @@ export default async function AdminDashboard() {
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xs font-bold text-foreground">{fmtINR(b.amount)}</p>
-                      <span
-                        className={`text-[12px] font-semibold px-1.5 py-0.5 rounded-md ${s.className}`}
-                      >
-                        {s.label}
-                      </span>
+                      <div className="flex items-center justify-end gap-1">
+                        <span
+                          className={`text-[12px] font-semibold px-1.5 py-0.5 rounded-md ${s.className}`}
+                        >
+                          {s.label}
+                        </span>
+                        <span
+                          className={`text-[12px] font-semibold px-1.5 py-0.5 rounded-md ${PAYMENT_STATUS_STYLES[b.paymentStatus]}`}
+                        >
+                          {PAYMENT_STATUS_LABELS_SHORT[b.paymentStatus]}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );

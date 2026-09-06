@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { TablePagination } from "@/components/admin/ui/TablePagination";
 import { StatCard } from "@/components/ui/molecules/stat-card";
+import { isBookingCompleted } from "@/lib/bookings/finance";
 
 type BookingStatus = "PENDING" | "CONFIRMED" | "PAID" | "FAILED" | "CANCELLED" | "REFUNDED";
 type PaymentStatus = "PENDING" | "PARTIAL" | "FULL";
@@ -85,14 +86,34 @@ const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
   FULL: "Full",
 };
 
+function isCompleted(b: Booking): boolean {
+  return isBookingCompleted(b.paymentStatus, new Date(b.travelDate));
+}
+
+// Cancel = nothing paid yet, nothing to give back — a plain status flip.
+// Once anything has been collected (PARTIAL or FULL), closing the booking
+// out is a Refund instead (see canRefund), since there's money to return.
+// Neither ever shows once the booking is completed (fully paid AND the
+// travel date has passed) — there's nothing left to do either way.
 function canCancel(b: Booking, isAdmin: boolean): boolean {
   return (
-    isAdmin && b.paymentStatus === "PARTIAL" && b.status !== "CANCELLED" && b.status !== "REFUNDED"
+    isAdmin &&
+    b.paymentStatus === "PENDING" &&
+    !isCompleted(b) &&
+    b.status !== "CANCELLED" &&
+    b.status !== "REFUNDED"
   );
 }
+// Refund also lands on CANCELLED (not REFUNDED) — a refunded booking IS a
+// cancelled one; the payments ledger (not the booking status) is the record
+// of how much, if anything, was actually returned.
 function canRefund(b: Booking, isAdmin: boolean): boolean {
   return (
-    isAdmin && b.paymentStatus === "FULL" && b.status !== "CANCELLED" && b.status !== "REFUNDED"
+    isAdmin &&
+    (b.paymentStatus === "PARTIAL" || b.paymentStatus === "FULL") &&
+    !isCompleted(b) &&
+    b.status !== "CANCELLED" &&
+    b.status !== "REFUNDED"
   );
 }
 
@@ -403,14 +424,23 @@ export function BookingsClient({
                         {b.convertedBy ?? "Website"}
                       </td>
                       <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            "text-[12px] font-bold px-2 py-0.5 rounded-full",
-                            STATUS_STYLES[b.status],
-                          )}
-                        >
-                          {b.status}
-                        </span>
+                        {isCompleted(b) ? (
+                          <span
+                            title="Fully paid and the travel date has passed"
+                            className="text-[12px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                          >
+                            COMPLETED
+                          </span>
+                        ) : (
+                          <span
+                            className={cn(
+                              "text-[12px] font-bold px-2 py-0.5 rounded-full",
+                              STATUS_STYLES[b.status],
+                            )}
+                          >
+                            {b.status}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -439,7 +469,7 @@ export function BookingsClient({
                                 handleStatusChange(b.id, "CANCELLED");
                               }}
                               disabled={isPending}
-                              title="Cancel booking (partially paid only)"
+                              title="Cancel booking (nothing paid yet)"
                               className="text-[12px] font-bold px-2 py-0.5 rounded-lg border border-red-200 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
                             >
                               CANCEL
@@ -449,10 +479,10 @@ export function BookingsClient({
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleStatusChange(b.id, "REFUNDED");
+                                handleStatusChange(b.id, "CANCELLED");
                               }}
                               disabled={isPending}
-                              title="Mark as refunded"
+                              title="Refund and cancel (record the actual refund amount on the Services page first)"
                               className="text-[12px] font-bold px-2 py-0.5 rounded-lg border border-purple-200 text-purple-600 dark:text-purple-400 hover:bg-purple-500/10 transition-colors"
                             >
                               REFUND
@@ -557,14 +587,20 @@ export function BookingsClient({
               </div>
               <div>
                 <p className="text-muted-foreground mb-0.5">Status</p>
-                <span
-                  className={cn(
-                    "text-[12px] font-bold px-2 py-0.5 rounded-full",
-                    STATUS_STYLES[selected.status],
-                  )}
-                >
-                  {selected.status}
-                </span>
+                {isCompleted(selected) ? (
+                  <span className="text-[12px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                    COMPLETED
+                  </span>
+                ) : (
+                  <span
+                    className={cn(
+                      "text-[12px] font-bold px-2 py-0.5 rounded-full",
+                      STATUS_STYLES[selected.status],
+                    )}
+                  >
+                    {selected.status}
+                  </span>
+                )}
               </div>
               <div>
                 <p className="text-muted-foreground mb-0.5">Payment</p>

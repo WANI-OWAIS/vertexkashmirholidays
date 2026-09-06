@@ -22,4 +22,5 @@ export function flushPublicCache() {
   revalidateTag("site-settings", "max");
   revalidateTag("role-permissions", "max");
   revalidateTag("faqs", "max");
+  revalidateTag("hotel-supplier-counts", "max");
 }

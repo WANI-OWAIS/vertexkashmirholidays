@@ -35,6 +35,7 @@ async function resolveGoogleCustomer(email: string, name?: string | null) {
       id: existing.id,
       role: existing.role,
       mustChangePassword: existing.mustChangePassword,
+      agencyStatus: existing.agencyStatus,
     };
   }
 
@@ -50,7 +51,12 @@ async function resolveGoogleCustomer(email: string, name?: string | null) {
       lastLoginAt: new Date(),
     },
   });
-  return { id: created.id, role: created.role, mustChangePassword: created.mustChangePassword };
+  return {
+    id: created.id,
+    role: created.role,
+    mustChangePassword: created.mustChangePassword,
+    agencyStatus: created.agencyStatus,
+  };
 }
 
 // Google's published signing keys, used to verify One Tap ID tokens
@@ -90,6 +96,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       user.id = resolved.id;
       user.role = resolved.role;
       user.mustChangePassword = resolved.mustChangePassword;
+      user.agencyStatus = resolved.agencyStatus;
       return true;
     },
   },
@@ -127,6 +134,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           name: payload.name ?? null,
           role: resolved.role,
           mustChangePassword: resolved.mustChangePassword,
+          agencyStatus: resolved.agencyStatus,
         };
       },
     }),
@@ -187,6 +195,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           name: user.name,
           role: user.role,
           mustChangePassword: user.mustChangePassword,
+          agencyStatus: user.agencyStatus,
         };
       },
     }),

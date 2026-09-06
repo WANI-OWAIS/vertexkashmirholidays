@@ -14,7 +14,9 @@ type CoverField =
   | "travelDates"
   | "travelers"
   | "packageType"
-  | "totalCost";
+  | "totalCost"
+  | "preparedByName"
+  | "preparedByPhone";
 
 interface ItineraryCoverProps {
   data: Pick<ItineraryData, CoverField | "coverImage">;
@@ -65,13 +67,28 @@ export function ItineraryCover({
       />
 
       <div className="relative flex min-h-[640px] flex-col p-6 text-white sm:min-h-[880px] sm:p-9 md:min-h-[1160px] md:p-12">
-        <div className="flex items-center">
+        <div className="flex items-start justify-between gap-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/png/horizontal/vertex-horizontal-dark-1600w.png"
             alt="Vertex Kashmir Holidays"
             className="h-12 w-auto object-contain sm:h-14"
           />
+          <div className="shrink-0 text-right">
+            <p className="text-[10px] font-semibold tracking-[0.28em] text-white/70">
+              PREPARED BY
+            </p>
+            <EditableField
+              value={data.preparedByName}
+              onValueChange={(v) => onUpdate("preparedByName", v)}
+              className="text-right text-sm font-bold text-white"
+            />
+            <EditableField
+              value={data.preparedByPhone}
+              onValueChange={(v) => onUpdate("preparedByPhone", v)}
+              className="text-right text-[12px] text-white/80"
+            />
+          </div>
         </div>
 
         <div className="mt-12 sm:mt-20 md:mt-24">

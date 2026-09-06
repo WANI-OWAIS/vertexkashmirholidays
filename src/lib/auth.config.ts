@@ -1,5 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
-import { isStaff, requiresMfa, type Role } from "@/lib/rbac";
+import { isStaff, requiresMfa, type Role, type B2BAgentStatus } from "@/lib/rbac";
 
 export const authConfig = {
   pages: {
@@ -66,6 +66,10 @@ export const authConfig = {
         // enroll view of /admin/mfa); an enrolled one is "pending" until they
         // pass the challenge. Both cases start true on every fresh sign-in.
         token.mfaPending = requiresMfa(user.role);
+        // Null for every non-B2B-agent user. Carried through purely so
+        // capability-gated routes can read it from the session without an
+        // extra DB round-trip — never used to block sign-in here.
+        token.agencyStatus = user.agencyStatus ?? null;
       }
 
       // After the customer sets a new password, or staff clear their MFA
@@ -90,6 +94,7 @@ export const authConfig = {
         session.user.id = token.id as string;
         session.user.mustChangePassword = Boolean(token.mustChangePassword);
         session.user.mfaPending = Boolean(token.mfaPending);
+        session.user.agencyStatus = (token.agencyStatus as B2BAgentStatus | undefined) ?? null;
       }
 
       return session;

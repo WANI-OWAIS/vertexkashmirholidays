@@ -1613,6 +1613,96 @@ ${detailRow("Temporary Password", data.tempPassword)}
   });
 }
 
+// ── B2B partner activation ────────────────────────────────────────────────────
+// Sent exactly once per activation event — whenever a B2B agent's
+// agencyStatus transitions to ACTIVE (see PATCH /api/admin/b2b-agents/[id]),
+// whether that's their first approval or a later reactivation after
+// suspension. Same "temp password, must change on first login" convention as
+// customerCredentialsHtml/Text above, not a second parallel design — this is
+// literally the only point in the B2B agent's lifecycle where a password is
+// ever emailed to them (registration itself never sends credentials).
+
+interface B2bAgentActivationData {
+  contactName: string;
+  agencyName: string;
+  email: string;
+  tempPassword: string;
+  /** Absolute login URL; falls back to the site /login. */
+  loginUrl?: string;
+  /** Absolute link to the B2B partner terms/confidentiality policy; falls back to the public B2B program page. */
+  termsUrl?: string;
+}
+
+function resolveB2bTermsUrl(termsUrl?: string): string {
+  if (termsUrl) return termsUrl;
+  return `${siteUrl()}/b2b-travel-partner-program#b2b-confidentiality`;
+}
+
+export function b2bAgentActivationText(data: B2bAgentActivationData): string {
+  const loginUrl = resolveLoginUrl(data.loginUrl);
+  const termsUrl = resolveB2bTermsUrl(data.termsUrl);
+  return [
+    "Your Vertex Kashmir Holidays B2B Partner account is active",
+    "",
+    `Dear ${data.contactName},`,
+    "",
+    `Good news — ${data.agencyName}'s B2B partner application has been approved. You can now log in and start submitting travel requests for your clients.`,
+    "",
+    "Log in with these details:",
+    `  Email: ${data.email}`,
+    `  Temporary password: ${data.tempPassword}`,
+    "",
+    `Sign in: ${loginUrl}`,
+    "",
+    "For your security, please change this password after your first login.",
+    "",
+    `Please review our B2B Partner Terms & Confidentiality Policy: ${termsUrl}`,
+    "",
+    "— Vertex Kashmir Holidays",
+  ].join("\n");
+}
+
+export function b2bAgentActivationHtml(data: B2bAgentActivationData): string {
+  const loginUrl = resolveLoginUrl(data.loginUrl);
+  const termsUrl = resolveB2bTermsUrl(data.termsUrl);
+  const content = `          <tr>
+           <td class="vk-px" style="padding:28px 28px 8px;font-family:Arial,Helvetica,sans-serif">
+             <h1 style="margin:0 0 10px;color:${BRAND};font-size:20px;font-weight:700">Your B2B Partner account is active</h1>
+             <p style="margin:0;color:#444444;font-size:14px;line-height:1.6">Dear ${escapeHtml(data.contactName)}, good news — <strong>${escapeHtml(data.agencyName)}</strong>&rsquo;s B2B partner application has been approved. You can now log in and start submitting travel requests for your clients.</p>
+           </td>
+         </tr>
+         <tr>
+           <td class="vk-px" style="padding:8px 28px 4px">
+             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;border-top:1px solid #eeeeee">
+${detailRow("Email", data.email)}
+${detailRow("Temporary Password", data.tempPassword)}
+             </table>
+           </td>
+         </tr>
+         <tr>
+           <td class="vk-px" style="padding:18px 28px 8px;font-family:Arial,Helvetica,sans-serif">
+             <a href="${loginUrl}" style="display:inline-block;padding:11px 20px;border-radius:10px;background:${BRAND};color:#ffffff;font-size:13px;font-weight:700;text-decoration:none">Sign in to your account</a>
+           </td>
+         </tr>
+         <tr>
+           <td class="vk-px" style="padding:8px 28px 8px;font-family:Arial,Helvetica,sans-serif">
+             <p style="margin:0;color:#666666;font-size:13px;line-height:1.6">For your security, please <strong>change this password</strong> after your first login.</p>
+           </td>
+         </tr>
+         <tr>
+           <td class="vk-px" style="padding:8px 28px 28px;font-family:Arial,Helvetica,sans-serif">
+             <p style="margin:0;color:#666666;font-size:13px;line-height:1.6">Please review our <a href="${termsUrl}" style="color:${BRAND};font-weight:700;text-decoration:underline">B2B Partner Terms &amp; Confidentiality Policy</a>, which apply to your account.</p>
+           </td>
+         </tr>`;
+
+  return emailShell({
+    title: "Your Vertex Kashmir Holidays B2B Partner account is active",
+    preheader: `${escapeHtml(data.agencyName)}'s B2B partner account is now active — sign in with ${escapeHtml(data.email)}.`,
+    contentHtml: content,
+    maxWidth: 480,
+  });
+}
+
 // ── Hotel supplier rate request (B2B outbound) ───────────────────────────────
 // Sent from the Hotel Rates admin page to a supplier property whose MAP rate
 // is missing or has expired. Deliberately NOT built on the shared emailShell()

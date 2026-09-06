@@ -39,6 +39,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   LEAVE_APPLIED: "Leave Applied",
   LEAVE_APPROVED: "Leave Approved",
   LEAVE_REJECTED: "Leave Rejected",
+  B2B_AGENT_STATUS_CHANGE: "B2B Agent Status Change",
 };
 
 const ACTION_STYLES: Record<AuditAction, string> = {
@@ -55,6 +56,7 @@ const ACTION_STYLES: Record<AuditAction, string> = {
   LEAVE_APPLIED: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
   LEAVE_APPROVED: "bg-green-500/10 text-green-600 dark:text-green-400",
   LEAVE_REJECTED: "bg-red-500/10 text-red-600 dark:text-red-400",
+  B2B_AGENT_STATUS_CHANGE: "bg-purple-500/10 text-purple-600 dark:text-purple-400",
 };
 
 const selectCls =

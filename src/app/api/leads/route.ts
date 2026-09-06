@@ -63,7 +63,9 @@ export async function GET(req: NextRequest) {
   const take = 30;
   const skip = (page - 1) * take;
 
-  const where: Prisma.LeadWhereInput = {};
+  // B2B requests (b2bAgentId set) live exclusively under /api/admin/b2b-requests
+  // — excluded here so they never mix into the normal lead workflow.
+  const where: Prisma.LeadWhereInput = { b2bAgentId: null };
   // Non-admin users can only see their assigned leads — enforced server-side.
   if (!isAdminOrSuper) {
     where.assignedToId = userId;

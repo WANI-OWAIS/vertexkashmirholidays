@@ -7,6 +7,8 @@
 import { compressMany } from "@/lib/itinerary/compress-image";
 import type { ItineraryData } from "@/types/itinerary";
 import type { PdfTrustContent } from "@/lib/itinerary/pdfTrustContent";
+import type { PdfSocialLinks } from "@/lib/pdf/contact";
+import type { B2bAgentInfo } from "@/components/admin/itinerary/B2bItineraryPdf";
 
 function slugify(text: string): string {
   return (
@@ -66,6 +68,7 @@ export async function downloadItineraryPdf(
   address?: string,
   tokenPaymentLink?: TokenPaymentLink,
   trustContent?: PdfTrustContent,
+  socialLinks?: PdfSocialLinks,
 ): Promise<ExportResult> {
   // Lazily pull in the PDF renderer and the document template only on export.
   const [{ pdf }, { ItineraryPdf, LOGO_ASSETS }, QRCode] = await Promise.all([
@@ -82,6 +85,7 @@ export async function downloadItineraryPdf(
     data.coverImage,
     data.transportImage,
     ...data.days.map((d) => d.image),
+    ...data.hotels.map((h) => h.image),
     ...data.hotelImages,
     ...data.activities.map((a) => a.image),
   ].filter(Boolean);
@@ -128,6 +132,7 @@ export async function downloadItineraryPdf(
       tokenQrDataUrl={tokenQrDataUrl}
       tokenAmountRupees={tokenPaymentLink?.amountRupees}
       trustContent={trustContent}
+      socialLinks={socialLinks}
     />,
   ).toBlob();
 
@@ -139,6 +144,62 @@ export async function downloadItineraryPdf(
   a.click();
   a.remove();
   // Revoke after a tick so the download has a chance to start.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+  return { bytes: blob.size };
+}
+
+/**
+ * B2B equivalent of downloadItineraryPdf — same data structure, same
+ * lazy-load-the-renderer-only-on-export pattern, but the dedicated
+ * quotation-style template (B2bItineraryPdf.tsx) instead of the photo-heavy
+ * customer document. Branded for the agent (see B2bItineraryPdf.tsx) — full
+ * white-label once the agency has earned it (see WHITE_LABEL_MIN_BOOKINGS,
+ * resolved by the caller — this function has no DB access), otherwise
+ * co-branded with a small Vertex icon fetched here only in that case.
+ */
+export async function downloadB2bItineraryPdf(
+  data: ItineraryData,
+  status: "DRAFT" | "SENT" | "CONFIRMED",
+  itineraryId: string,
+  agent?: B2bAgentInfo | null,
+  whiteLabel = true,
+): Promise<ExportResult> {
+  // Display-only fields derived at export time — neither is a separately
+  // stored column (Phase 4 is presentation-only, see B2bItineraryPdf.tsx).
+  // "Issued" is the moment this PDF is generated, which is also the most
+  // accurate reading of that label — not the itinerary row's last save time.
+  const quoteRef = `B2B-${itineraryId.slice(-8).toUpperCase()}`;
+  const issuedAt = new Date();
+  const [{ pdf }, { B2bItineraryPdf }, { LOGO_SRC }] = await Promise.all([
+    import("@react-pdf/renderer"),
+    import("@/components/admin/itinerary/B2bItineraryPdf"),
+    import("@/components/admin/itinerary/ItineraryPdf"),
+  ]);
+  const vertexIcon = whiteLabel ? undefined : await fetchAsDataUrl(LOGO_SRC).catch(() => undefined);
+
+  const blob = await pdf(
+    <B2bItineraryPdf
+      data={data}
+      status={status}
+      quoteRef={quoteRef}
+      updatedAt={issuedAt}
+      agent={agent}
+      whiteLabel={whiteLabel}
+      vertexIcon={vertexIcon}
+    />,
+  ).toBlob();
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  // No "vertex" in the filename either — an agent forwarding this file to
+  // their own customer would otherwise leak the underlying provider even
+  // though the document content itself is fully white-labeled.
+  a.download = `travel-quotation-${slugify(data.preparedFor)}-${new Date().toISOString().slice(0, 10)}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 
   return { bytes: blob.size };

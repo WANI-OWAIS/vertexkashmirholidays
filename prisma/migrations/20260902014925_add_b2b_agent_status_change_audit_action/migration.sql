@@ -1,0 +1,3 @@
+-- AlterEnum
+ALTER TYPE "AuditAction" ADD VALUE 'B2B_AGENT_STATUS_CHANGE';
+
