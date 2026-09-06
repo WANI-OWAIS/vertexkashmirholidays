@@ -49,10 +49,10 @@ export function computeCategoryFromMap(deluxeMapNet: number | null | undefined):
 // Initial destination set. Extend this array to add a destination later —
 // no migration needed, `destination` is a plain filtered string column.
 export const HOTEL_DESTINATIONS = [
-  "Houseboats",
   "Srinagar",
   "Pahalgam",
   "Gulmarg / Tangmarg",
+  "Houseboats",
   "Sonamarg",
   "Gurez",
   "Leh / Ladakh",

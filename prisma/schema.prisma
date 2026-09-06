@@ -49,6 +49,21 @@ model User {
   mfaEnabledAt         DateTime?
   recoveryCodes        MfaRecoveryCode[]
   deletedAt            DateTime? // soft-delete marker; non-null = hidden + login blocked
+  // ── B2B Agent (Phase 1) ──────────────────────────────────────────────────
+  // A B2B agent is a CUSTOMER-role User with agencyStatus set. Null = not a
+  // B2B agent (every existing/normal User). PENDING = registered but not yet
+  // reviewed (no B2B capability — every B2B route must gate on ACTIVE
+  // server-side; login itself is never blocked by this field). ACTIVE = full
+  // B2B capability. SUSPENDED = capability revoked without deleting the
+  // account or its historical relationships (mirrors deletedAt's "hide, don't
+  // delete" convention, but for capability rather than visibility/login).
+  agencyStatus         B2BAgentStatus?
+  agencyName               String?
+  agencyWebsite            String?
+  agencyRegistrationNumber String?
+  agencyGstin              String?
+  agencyState              String?
+  agencyLogoUrl            String?
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   bookings             Booking[]
@@ -61,7 +76,10 @@ model User {
   reviews              Review[]
   itineraries          Itinerary[]          @relation("ItineraryOwner")
   itinerariesEdited    Itinerary[]          @relation("ItineraryEditor")
+  proposals            ProposalItinerary[]  @relation("ProposalOwner")
   leadsAssigned        Lead[]               @relation("LeadAssignee")
+  b2bRequests          Lead[]               @relation("B2BAgentLeads")
+  b2bRequestsCreated   Lead[]               @relation("LeadCreatedBy")
   notifications        Notification[]
   // ── Vertex Connect ────────────────────────────────────────────────────────
   chatRoomsCreated     ChatRoom[]           @relation("ConnectRoomCreator")
@@ -76,6 +94,7 @@ model User {
   // email already has a unique index via @unique above — no separate @@index needed.
   @@index([deletedAt])
   @@index([role, deletedAt])
+  @@index([agencyStatus])
 }
 
 // One-time recovery codes for staff TOTP MFA — issued once at enrollment
@@ -176,6 +195,24 @@ model ItineraryHistory {
   @@index([createdAt])
 }
 
+// Standalone 3-tier (Budget/Premium/Luxury) proposal document — a generic,
+// reusable comparison PDF generator, deliberately NOT linked to any Lead or
+// Booking (unlike Itinerary). No lock/history/payment-link machinery here:
+// there's no compliance surface for a document with no lead attached.
+model ProposalItinerary {
+  id        String         @id @default(cuid())
+  title     String
+  status    ProposalStatus @default(DRAFT)
+  data      Json
+  ownerId   String
+  owner     User           @relation("ProposalOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([ownerId])
+  @@index([status])
+}
+
 // Pending email-verification record for account registration, the
 // forgot-password flow, Careers job-application email verification, AND public
 // booking checkout (distinguished by `purpose`). A row is created when a
@@ -234,6 +271,7 @@ enum OtpPurpose {
   RESET
   CAREERS
   BOOKING
+  B2B_REGISTER
 }
 
 model NewsletterSubscriber {
@@ -578,6 +616,7 @@ model Booking {
   @@index([createdAt])
   @@index([deletedAt, createdAt])
   @@index([guestEmail])
+  @@index([status, createdAt])
 }
 
 // A single payment entry against a booking — the booking payment ledger.
@@ -660,6 +699,7 @@ model BookingCommission {
   @@index([employeeId])
   @@index([status])
   @@index([salaryRecordId])
+  @@index([employeeId, status, earnedAt])
 }
 
 // One payroll record per employee per calendar month (salaryMonth = "2026-08",
@@ -767,6 +807,23 @@ model Lead {
   followUpAt         DateTime?
   assignedToId       String?
   assignedTo         User?               @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  // ── B2B request (Phase 2) ────────────────────────────────────────────────
+  // Non-null b2bAgentId is the ONLY discriminator for "this Lead is a B2B
+  // request" — no separate leadType field (mirrors the Itinerary.leadId/
+  // bookingId nullable-FK-as-discriminator idiom already used elsewhere in
+  // this schema). Restrict (not Cascade/SetNull): a B2B agent must never be
+  // hard-deletable while historical requests exist.
+  b2bAgentId         String?
+  b2bAgent           User?               @relation("B2BAgentLeads", fields: [b2bAgentId], references: [id], onDelete: Restrict)
+  // Who created this request: null = the agent self-submitted; set = a staff
+  // member created it on the agent's behalf (mirrors assignedToId's shape).
+  // Normal (non-B2B) leads never set this.
+  createdById        String?
+  createdBy          User?               @relation("LeadCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  // B2B-request-only fields — always null on normal leads.
+  days               Int?
+  rooms              Int?
+  budget             Float?
   status             LeadStatus          @default(NEW)
   bookingId          String?
   booking            Booking?            @relation(fields: [bookingId], references: [id], onDelete: SetNull)
@@ -804,11 +861,15 @@ model Lead {
   @@index([assignedToId])
   @@index([createdAt])
   @@index([followUpAt])
+  @@index([assignedToId, createdAt])
+  @@index([status, createdAt])
   // Public-form dedupe looks up the most recent lead by normalized phone/email.
   @@index([phone])
   @@index([email])
   // Booking.leads relation lookups (admin booking detail pages).
   @@index([bookingId])
+  // Agent's-own-requests + CRM B2B-requests-listing queries.
+  @@index([b2bAgentId])
 }
 
 // Bridges attribution across the WhatsApp gap: a visitor's captured attribution
@@ -1648,6 +1709,16 @@ enum Role {
   CUSTOMER
 }
 
+// B2B agent capability status on User.agencyStatus (Phase 1 — see
+// .ai/adr or the B2B architecture report for the full rationale). Null on
+// User.agencyStatus = not a B2B agent at all; this enum only describes the
+// three states a B2B agent can be in once that field is set.
+enum B2BAgentStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
 enum TourCategory {
   HONEYMOON
   FAMILY
@@ -1720,6 +1791,12 @@ enum LeadStatus {
   QUALIFIED
   NEGOTIATION
   ON_HOLD
+  // B2B-request-only value, set when CRM generates the itinerary for a
+  // request (Phase 3). Normal leads never use this — the normal 8-status
+  // pipeline above is otherwise untouched. NEW doubles as the B2B "Pending"
+  // state (displayed as "Pending" in B2B UI) rather than adding a redundant
+  // value with the same meaning.
+  IN_PROGRESS
   CONVERTED
   REJECTED
 }
@@ -1774,12 +1851,18 @@ enum AuditAction {
   LEAVE_APPLIED
   LEAVE_APPROVED
   LEAVE_REJECTED
+  B2B_AGENT_STATUS_CHANGE
 }
 
 enum ItineraryStatus {
   DRAFT
   SENT
   CONFIRMED
+}
+
+enum ProposalStatus {
+  DRAFT
+  SENT
 }
 
 // ── Vertex Connect — Internal team communication ───────────────────────────────

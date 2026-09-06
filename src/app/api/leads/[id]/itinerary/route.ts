@@ -29,10 +29,15 @@ export async function POST(_req: NextRequest, { params }: Params) {
       endDate: true,
       assignedToId: true,
       status: true,
+      b2bAgentId: true,
       itinerary: { select: { id: true } },
     },
   });
-  if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+  // B2B requests don't have itinerary generation yet (later phase) — this
+  // endpoint assumes normal-lead semantics and must never touch a B2B row.
+  if (!lead || lead.b2bAgentId !== null) {
+    return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+  }
 
   // Creating an itinerary is a lead activity — only the lead's assignee may do it
   // (an admin acting on someone else's lead can only reassign, not manage it).

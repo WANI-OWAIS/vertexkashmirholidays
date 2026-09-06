@@ -22,6 +22,7 @@ import { getDisplayReviews } from "@/lib/reviews";
 import { getFaqsForPlacement } from "@/lib/faqs";
 import { getKashmirWeather } from "@/lib/weather";
 import { HERO_FEATURES, PAYMENT_METHODS } from "@/lib/home/heroContent";
+import { getVerifiedPropertiesCount } from "@/lib/hotelSuppliers/stats";
 import type { SectionHeading } from "@/types/home";
 
 // ISR: serve cached HTML and refresh in the background (admin edits appear
@@ -60,6 +61,8 @@ export default async function HomePage() {
     reviews,
     blogs,
     faqs,
+    verifiedPropertiesCount,
+    publishedToursCount,
   ] = await Promise.all([
     prisma.homeContent.findUnique({ where: { id: "singleton" } }),
     prisma.homeSection.findMany(),
@@ -119,6 +122,11 @@ export default async function HomePage() {
     }),
     // Centralized FAQ module — same Faq pool /about, /contact and /faq draw from.
     getFaqsForPlacement("HOME"),
+    // Real, derived trust counts for the hero stat strip — never hardcoded.
+    // Scoped to region: "KASHMIR" to match the "Kashmir Tours" label (Tour also
+    // has a LADAKH region, which this page's featured list already excludes).
+    getVerifiedPropertiesCount(),
+    prisma.tour.count({ where: { published: true, region: "KASHMIR" } }),
   ]);
 
   // Live weather for the updates strip — fetched in parallel but outside the
@@ -138,6 +146,24 @@ export default async function HomePage() {
       ctaHref: s?.ctaHref ?? null,
     };
   };
+
+  // Real, DB-derived trust stats appended after the admin-authored SiteStat
+  // rows — never invented, and only shown when the underlying count is > 0.
+  const derivedHeroStats: { label: string; value: string; suffix: string | null }[] = [];
+  if (verifiedPropertiesCount > 0) {
+    derivedHeroStats.push({
+      label: "Verified Properties",
+      value: String(verifiedPropertiesCount),
+      suffix: "+",
+    });
+  }
+  if (publishedToursCount > 0) {
+    derivedHeroStats.push({
+      label: publishedToursCount === 1 ? "Kashmir Tour" : "Kashmir Tours",
+      value: String(publishedToursCount),
+      suffix: null,
+    });
+  }
 
   let formAvatars: string[] = [];
   try {
@@ -187,9 +213,12 @@ export default async function HomePage() {
           formAvatars,
         }}
         slides={slides.map((s) => ({ image: s.image, imageMobile: s.imageMobile, alt: s.alt }))}
-        stats={stats
-          .filter((s) => s.section === "hero")
-          .map((s) => ({ label: s.label, value: s.value, suffix: s.suffix }))}
+        stats={[
+          ...stats
+            .filter((s) => s.section === "hero")
+            .map((s) => ({ label: s.label, value: s.value, suffix: s.suffix })),
+          ...derivedHeroStats,
+        ]}
         features={HERO_FEATURES}
         paymentMethods={PAYMENT_METHODS}
       />

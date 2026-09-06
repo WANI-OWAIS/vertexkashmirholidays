@@ -22,11 +22,12 @@ import {
   Settings,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
-import { BookingStatus, type Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { requireModuleView } from "@/lib/admin/moduleGuard";
 import { bookingWhereForUser } from "@/lib/bookings/scope";
 import { RevenueChart } from "@/components/admin/RevenueChartLazy";
+import { computeBookingFinance, round2, type PaymentStatus } from "@/lib/bookings/finance";
 
 export const metadata: Metadata = { title: "Dashboard — Admin" };
 export const dynamic = "force-dynamic";
@@ -75,6 +76,29 @@ const STATUS_STYLES: Record<
     className: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
     Icon: AlertCircle,
   },
+  // CONFIRMED was missing here, so every confirmed booking silently fell
+  // through to the PENDING fallback below — a booking can be CONFIRMED
+  // (going ahead) independent of how much has actually been paid, see
+  // PAYMENT_STATUS_STYLES for the money-received signal shown alongside it.
+  CONFIRMED: {
+    label: "Confirmed",
+    className: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
+    Icon: CheckCircle2,
+  },
+};
+
+// Derived "how much has actually been paid" — kept separate from the booking
+// lifecycle status above, same as src/lib/bookings/finance.ts's own
+// PaymentStatus type (never stored, always computed from the payment ledger).
+const PAYMENT_STATUS_STYLES: Record<PaymentStatus, string> = {
+  FULL: "bg-green-500/15 text-green-700 dark:text-green-300",
+  PARTIAL: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  PENDING: "bg-muted text-muted-foreground",
+};
+const PAYMENT_STATUS_LABELS_SHORT: Record<PaymentStatus, string> = {
+  FULL: "Paid in full",
+  PARTIAL: "Partially paid",
+  PENDING: "Unpaid",
 };
 
 const LEAD_STATUS_STYLES: Record<string, string> = {
@@ -140,40 +164,70 @@ export default async function AdminDashboard() {
   // and leads assigned to them — same ownership rule as the Bookings and
   // Leads pages, applied here too so the dashboard isn't an org-wide leak.
   const bookingScope: Prisma.BookingWhereInput = { deletedAt: null, ...bookingWhereForUser(role, userId) };
-  const leadScope: Prisma.LeadWhereInput = isAdmin ? {} : { assignedToId: userId };
+  // B2B requests (b2bAgentId set) are tracked separately (see /admin/b2b-requests)
+  // and excluded from normal-lead dashboard stats.
+  const leadScope: Prisma.LeadWhereInput = {
+    b2bAgentId: null,
+    ...(isAdmin ? {} : { assignedToId: userId }),
+  };
+
+  // Revenue must reflect money actually collected, not the lifecycle `status`
+  // field — `status: PAID` is set only by the Razorpay webhook/reconcile path
+  // (see src/lib/bookings/online-payment.ts) and never by manually-recorded
+  // offline/cash payments, so a fully-paid booking can legitimately sit at
+  // CONFIRMED forever. Every other booking-money view in this app (admin/
+  // bookings list, invoices) already derives the real figure from the payment
+  // ledger via computeBookingFinance() — and per that helper's own doc
+  // comment, "money actually collected" for a booking is just the net of its
+  // payments (non-REFUND minus REFUND), independent of amount/discount. That
+  // means it can be summed directly in Postgres (SUM/GROUP BY) below instead
+  // of loading every in-scope booking's full payments array into memory and
+  // reducing it in JavaScript, which is what this page used to do for every
+  // booking ever made.
+  const netPaidExpr = Prisma.sql`CASE WHEN p."type" = 'REFUND' THEN -p."amount" ELSE p."amount" END`;
+  // Booking-visibility scope (see bookingWhereForUser) re-expressed as a SQL
+  // fragment for the raw aggregations below — ADMIN/SUPERADMIN see every
+  // booking; every other role only sees bookings converted from a lead
+  // assigned to them, or any B2B-converted booking (no per-agent assignee).
+  const scopeSql = isAdmin
+    ? Prisma.sql`TRUE`
+    : Prisma.sql`EXISTS (
+        SELECT 1 FROM "Lead" l
+        WHERE l."bookingId" = b.id
+          AND (l."assignedToId" = ${userId} OR l."b2bAgentId" IS NOT NULL)
+      )`;
+
+  // Last 6 calendar months (oldest first) — same boundaries the chart always
+  // used, computed here so the raw query below can bound its scan to exactly
+  // this window instead of scanning every booking ever made.
+  const months = Array.from({ length: 6 }, (_, i) => {
+    const start = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+    const label =
+      start.toLocaleString("en-IN", { month: "short" }) + " '" + String(start.getFullYear()).slice(2);
+    return { start, end, label };
+  });
+  const monthBucketCase = Prisma.join(
+    months.map(
+      (m, i) => Prisma.sql`WHEN b."createdAt" >= ${m.start} AND b."createdAt" < ${m.end} THEN ${i}`,
+    ),
+    " ",
+  );
 
   const [
-    revenueAgg,
-    thisMonthRevAgg,
-    lastMonthRevAgg,
     totalBookings,
     thisMonthBookings,
     lastMonthBookings,
     totalLeads,
     thisMonthLeads,
     lastMonthLeads,
-    paidCount,
-    recentBookings,
+    recentBookingsRaw,
     recentLeads,
     pendingReviews,
-    allPaidBookings,
+    revenueByMonthRaw,
+    totalsRaw,
+    topToursRaw,
   ] = await Promise.all([
-    prisma.booking.aggregate({
-      where: { ...bookingScope, status: BookingStatus.PAID },
-      _sum: { amount: true },
-    }),
-    prisma.booking.aggregate({
-      where: { ...bookingScope, status: BookingStatus.PAID, createdAt: { gte: startOfMonth } },
-      _sum: { amount: true },
-    }),
-    prisma.booking.aggregate({
-      where: {
-        ...bookingScope,
-        status: BookingStatus.PAID,
-        createdAt: { gte: startOfLastMonth, lt: startOfMonth },
-      },
-      _sum: { amount: true },
-    }),
     prisma.booking.count({ where: bookingScope }),
     prisma.booking.count({ where: { ...bookingScope, createdAt: { gte: startOfMonth } } }),
     prisma.booking.count({
@@ -184,7 +238,6 @@ export default async function AdminDashboard() {
     prisma.lead.count({
       where: { ...leadScope, createdAt: { gte: startOfLastMonth, lt: startOfMonth } },
     }),
-    prisma.booking.count({ where: { ...bookingScope, status: BookingStatus.PAID } }),
     prisma.booking.findMany({
       where: bookingScope,
       take: 8,
@@ -195,6 +248,7 @@ export default async function AdminDashboard() {
         amount: true,
         createdAt: true,
         tour: { select: { title: true, coverImage: true, slug: true } },
+        payments: { select: { amount: true, type: true } },
       },
     }),
     prisma.lead.findMany({
@@ -215,37 +269,66 @@ export default async function AdminDashboard() {
         tour: { select: { title: true } },
       },
     }),
-    prisma.booking.findMany({
-      where: { ...bookingScope, status: BookingStatus.PAID },
-      select: { amount: true, createdAt: true, tourId: true },
-    }),
+    // Bounded to the 6-month window — only the rows the chart can show.
+    prisma.$queryRaw<{ bucket: number; revenue: number }[]>(Prisma.sql`
+      SELECT CASE ${monthBucketCase} END AS bucket,
+             COALESCE(SUM(${netPaidExpr}), 0)::float8 AS revenue
+      FROM "Booking" b
+      LEFT JOIN "BookingPayment" p ON p."bookingId" = b.id
+      WHERE b."deletedAt" IS NULL
+        AND b."createdAt" >= ${months[0].start}
+        AND b."createdAt" < ${months[5].end}
+        AND ${scopeSql}
+      GROUP BY 1
+    `),
+    // All-time total revenue + count of paid bookings — a single aggregated
+    // row instead of every in-scope booking loaded and reduced in JS.
+    prisma.$queryRaw<{ totalRevenue: number; paidCount: number }[]>(Prisma.sql`
+      SELECT COALESCE(SUM(net), 0)::float8 AS "totalRevenue",
+             COUNT(*) FILTER (WHERE net > 0)::int AS "paidCount"
+      FROM (
+        SELECT b.id, COALESCE(SUM(${netPaidExpr}), 0) AS net
+        FROM "Booking" b
+        LEFT JOIN "BookingPayment" p ON p."bookingId" = b.id
+        WHERE b."deletedAt" IS NULL AND ${scopeSql}
+        GROUP BY b.id
+      ) t
+    `),
+    // Top 5 tours by all-time net revenue — ranked and limited in the
+    // database; only the winning 5 rows ever leave Postgres.
+    prisma.$queryRaw<{ tourId: string; revenue: number; bookingCount: number }[]>(Prisma.sql`
+      SELECT b."tourId" AS "tourId",
+             SUM(${netPaidExpr})::float8 AS revenue,
+             COUNT(DISTINCT b.id)::int AS "bookingCount"
+      FROM "Booking" b
+      JOIN "BookingPayment" p ON p."bookingId" = b.id
+      WHERE b."deletedAt" IS NULL AND b."tourId" IS NOT NULL AND ${scopeSql}
+      GROUP BY b."tourId"
+      HAVING SUM(${netPaidExpr}) > 0
+      ORDER BY revenue DESC
+      LIMIT 5
+    `),
   ]);
 
-  // Revenue by month — last 6 months
-  const revenueByMonth = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
-    const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    const label =
-      d.toLocaleString("en-IN", { month: "short" }) + " '" + String(d.getFullYear()).slice(2);
-    const revenue = allPaidBookings
-      .filter((b) => b.createdAt >= d && b.createdAt < nextMonth)
-      .reduce((s, b) => s + b.amount, 0);
-    return { month: label, revenue };
-  });
+  const recentBookings = recentBookingsRaw.map((b) => ({
+    ...b,
+    paymentStatus: computeBookingFinance({ amount: b.amount, payments: b.payments, services: [] })
+      .paymentStatus,
+  }));
 
-  // Top tours
+  // Revenue by month — bucketed in Postgres above; fill in any month with no
+  // matching rows as 0, same as the previous in-memory reduce.
+  const revenueByMonth = months.map((m, i) => ({
+    month: m.label,
+    revenue: round2(revenueByMonthRaw.find((r) => r.bucket === i)?.revenue ?? 0),
+  }));
+
+  // Top tours — already ranked and limited to 5 by the database.
   const tourRevMap: Record<string, { revenue: number; count: number }> = {};
-  for (const b of allPaidBookings) {
-    if (!b.tourId) continue; // lead-converted bookings have no tour
-    const e = tourRevMap[b.tourId] ?? { revenue: 0, count: 0 };
-    e.revenue += b.amount;
-    e.count += 1;
-    tourRevMap[b.tourId] = e;
+  for (const r of topToursRaw) {
+    tourRevMap[r.tourId] = { revenue: round2(r.revenue), count: r.bookingCount };
   }
-  const topTourIds = Object.entries(tourRevMap)
-    .sort((a, b) => b[1].revenue - a[1].revenue)
-    .slice(0, 5)
-    .map(([id]) => id);
+  const topTourIds = topToursRaw.map((r) => r.tourId);
 
   const topTourDetails = topTourIds.length
     ? await prisma.tour.findMany({
@@ -280,9 +363,13 @@ export default async function AdminDashboard() {
       })
     : topTourDetails.map((t) => ({ ...t, bookingCount: 0, revenue: 0 }));
 
-  const totalRevenue = revenueAgg._sum.amount ?? 0;
-  const thisMonthRev = thisMonthRevAgg._sum.amount ?? 0;
-  const lastMonthRev = lastMonthRevAgg._sum.amount ?? 0;
+  const totalRevenue = round2(totalsRaw[0]?.totalRevenue ?? 0);
+  const paidCount = totalsRaw[0]?.paidCount ?? 0;
+  // The 6-month chart's last two buckets are exactly "this month" and "last
+  // month" by construction (see `months` above) — reused here instead of a
+  // separate all-bookings scan.
+  const thisMonthRev = revenueByMonth[5].revenue;
+  const lastMonthRev = revenueByMonth[4].revenue;
   const conversionRate = totalLeads > 0 ? Math.round((paidCount / totalLeads) * 1000) / 10 : 0;
   const avgBooking = paidCount > 0 ? Math.round(totalRevenue / paidCount) : 0;
 
@@ -451,11 +538,18 @@ export default async function AdminDashboard() {
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xs font-bold text-foreground">{fmtINR(b.amount)}</p>
-                      <span
-                        className={`text-[12px] font-semibold px-1.5 py-0.5 rounded-md ${s.className}`}
-                      >
-                        {s.label}
-                      </span>
+                      <div className="flex items-center justify-end gap-1">
+                        <span
+                          className={`text-[12px] font-semibold px-1.5 py-0.5 rounded-md ${s.className}`}
+                        >
+                          {s.label}
+                        </span>
+                        <span
+                          className={`text-[12px] font-semibold px-1.5 py-0.5 rounded-md ${PAYMENT_STATUS_STYLES[b.paymentStatus]}`}
+                        >
+                          {PAYMENT_STATUS_LABELS_SHORT[b.paymentStatus]}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );

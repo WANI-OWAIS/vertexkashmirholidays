@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/permissions";
 import { sendPaymentInvoiceEmail } from "@/lib/bookings/notify";
 import { resolveGst } from "@/lib/payments/gst";
-import { computeBookingFinance } from "@/lib/bookings/finance";
+import { computeBookingFinance, isBookingCompleted } from "@/lib/bookings/finance";
 import { syncBookingCommission } from "@/lib/bookings/commissionSync";
 import { bookingWhereForUser } from "@/lib/bookings/scope";
 import type { Role } from "@/lib/rbac";
@@ -39,6 +39,8 @@ export async function POST(req: NextRequest, { params }: Params) {
       amount: true,
       discountType: true,
       discountValue: true,
+      travelDate: true,
+      status: true,
       payments: { select: { amount: true, type: true } },
     },
   });
@@ -58,17 +60,28 @@ export async function POST(req: NextRequest, { params }: Params) {
     );
   }
   const d = parsed.data;
+  const isRefund = (d.type ?? "PARTIAL") === "REFUND";
 
-  // A payment can never exceed the remaining balance (server-authoritative).
-  // Refunds are excluded — they are not collections against the payable.
-  if ((d.type ?? "PARTIAL") !== "REFUND") {
-    const finance = computeBookingFinance({
-      amount: booking.amount,
-      discountType: booking.discountType,
-      discountValue: booking.discountValue,
-      payments: booking.payments,
-      services: [],
-    });
+  const finance = computeBookingFinance({
+    amount: booking.amount,
+    discountType: booking.discountType,
+    discountValue: booking.discountValue,
+    payments: booking.payments,
+    services: [],
+  });
+
+  if (isRefund) {
+    // A completed booking (fully paid AND the travel date has passed) has
+    // nothing left to refund — matches the Cancel/Refund CTA visibility rule
+    // in BookingsClient.tsx / api/bookings/[id]/route.ts.
+    if (isBookingCompleted(finance.paymentStatus, booking.travelDate)) {
+      return NextResponse.json(
+        { error: "This booking is completed and can no longer be refunded." },
+        { status: 422 },
+      );
+    }
+  } else {
+    // A payment can never exceed the remaining balance (server-authoritative).
     if (finance.balance <= 0) {
       return NextResponse.json(
         { error: "This booking is already fully paid. No further payment can be recorded." },
@@ -101,6 +114,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       recordedById: guard.user.id as string,
     },
   });
+
+  // A refund IS a cancellation — a booking with money going back out isn't
+  // going ahead. Only the payment ledger records how much was returned.
+  if (isRefund && booking.status !== "CANCELLED") {
+    await prisma.booking.update({ where: { id }, data: { status: "CANCELLED" } });
+  }
 
   await syncBookingCommission(prisma, id);
 

@@ -12,7 +12,8 @@ export type WhatsAppSource =
   | "tour_sidebar"
   | "tour_customize_banner"
   | "booking_help"
-  | "lead_form";
+  | "lead_form"
+  | "b2b_page";
 
 export type AnalyticsEvent =
   | {
@@ -41,6 +42,8 @@ export type AnalyticsEvent =
       package_name: string;
       items: { item_name: string; price: number; quantity: number }[];
     }
+  | { event: "b2b_registration_started" }
+  | { event: "b2b_registration_submitted" }
   | { event: "careers_viewed" }
   | { event: "job_viewed"; job_title: string; job_id: string }
   | { event: "apply_started"; job_title: string; job_id: string }

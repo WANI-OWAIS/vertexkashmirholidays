@@ -15,7 +15,7 @@ import {
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { computeBookingFinance, PAYMENT_STATUS_LABELS } from "@/lib/bookings/finance";
+import { computeBookingFinance, isBookingCompleted, PAYMENT_STATUS_LABELS } from "@/lib/bookings/finance";
 import { customerBookingWhere } from "@/lib/account/bookingScope";
 import {
   groupServiceTables,
@@ -23,6 +23,7 @@ import {
   type ServiceKind,
 } from "@/lib/bookings/serviceDisplay";
 import { ItineraryDownloadButton } from "@/components/account/ItineraryDownloadButton";
+import { B2bItineraryDownloadButton } from "@/components/account/B2bItineraryDownloadButton";
 
 export const metadata: Metadata = { title: "Booking Details" };
 export const dynamic = "force-dynamic";
@@ -76,7 +77,11 @@ export default async function AccountBookingDetailPage({ params }: PageProps) {
       itinerary: { select: { title: true, status: true, updatedAt: true } },
       leads: {
         take: 1,
-        select: { itinerary: { select: { title: true, status: true, updatedAt: true } } },
+        select: {
+          id: true,
+          b2bAgentId: true,
+          itinerary: { select: { title: true, status: true, updatedAt: true } },
+        },
       },
     },
   });
@@ -85,8 +90,13 @@ export default async function AccountBookingDetailPage({ params }: PageProps) {
   // Lead-converted bookings have no itinerary of their own — they use the
   // originating lead's (see business-rules.md → Itinerary Rules). Only a
   // SENT/CONFIRMED itinerary is shown; a DRAFT is still a staff work-in-progress.
-  const itinerary = booking.itinerary ?? booking.leads[0]?.itinerary ?? null;
+  const originatingLead = booking.leads[0] ?? null;
+  const itinerary = booking.itinerary ?? originatingLead?.itinerary ?? null;
   const itineraryVisible = !!itinerary && itinerary.status !== "DRAFT";
+  // A B2B-converted booking downloads the agent-branded quotation PDF (see
+  // B2bItineraryPdf.tsx), never the normal photo-heavy customer document —
+  // this page is shared by both, so the two download paths must diverge here.
+  const b2bRequestId = originatingLead?.b2bAgentId ? originatingLead.id : null;
 
   const finance = computeBookingFinance({
     amount: booking.amount,
@@ -95,6 +105,7 @@ export default async function AccountBookingDetailPage({ params }: PageProps) {
     payments: booking.payments,
     services: booking.services,
   });
+  const completed = isBookingCompleted(finance.paymentStatus, booking.travelDate);
 
   const serviceTables = groupServiceTables(booking.services);
   const inclusions = parseInclusions(booking.inclusions);
@@ -121,14 +132,20 @@ export default async function AccountBookingDetailPage({ params }: PageProps) {
             </h1>
             <p className="mt-1 text-xs text-muted-foreground">Ref: {ref}</p>
           </div>
-          <span
-            className={cn(
-              "rounded-full px-2.5 py-1 text-[12px] font-bold",
-              STATUS_STYLES[booking.status] ?? "bg-muted text-muted-foreground",
-            )}
-          >
-            {booking.status}
-          </span>
+          {completed ? (
+            <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[12px] font-bold text-emerald-700 dark:text-emerald-300">
+              Completed
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "rounded-full px-2.5 py-1 text-[12px] font-bold",
+                STATUS_STYLES[booking.status] ?? "bg-muted text-muted-foreground",
+              )}
+            >
+              {booking.status}
+            </span>
+          )}
         </div>
         <div className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
           <div className="flex items-center gap-2">
@@ -169,7 +186,11 @@ export default async function AccountBookingDetailPage({ params }: PageProps) {
                 })}
               </p>
             </div>
-            <ItineraryDownloadButton bookingId={booking.id} />
+            {b2bRequestId ? (
+              <B2bItineraryDownloadButton requestId={b2bRequestId} />
+            ) : (
+              <ItineraryDownloadButton bookingId={booking.id} />
+            )}
           </div>
         </div>
       )}

@@ -21,6 +21,12 @@ import {
   Building2,
   Star,
   Crown,
+  ClipboardList,
+  FileCheck2,
+  FolderCog,
+  Headset,
+  Lock,
+  ShieldAlert,
 } from "lucide-react";
 import { WhatsAppIcon } from "@/components/icons/brand";
 import { getSiteSettings } from "@/lib/siteSettings";
@@ -28,6 +34,11 @@ import { buildMetadata, SITE_URL } from "@/lib/seo";
 import { buildWhatsAppHref } from "@/lib/whatsapp";
 import { SecondaryHero } from "@/components/layout/SecondaryHero";
 import { JsonLd, buildBreadcrumbList, buildFAQPage } from "@/components/seo/JsonLd";
+import { B2bWhatsAppLink } from "@/components/b2b/B2bWhatsAppLink";
+import { B2bRegisterButton } from "@/components/b2b/B2bRegisterButton";
+import { B2bRegisterModal } from "@/components/b2b/B2bRegisterModal";
+import { B2bYoutubeEmbed } from "@/components/b2b/B2bYoutubeEmbed";
+import { B2B_VIDEO_ID, B2B_VIDEO_TITLE } from "@/lib/b2b/videoConfig";
 
 // Static marketing/SEO page — no CMS model behind it (unlike Home/Contact),
 // so revalidating on the standard ISR window is enough; only the contact
@@ -137,6 +148,21 @@ const FAQS: { question: string; answer: string }[] = [
     question: "Are preferential rates guaranteed for new partners?",
     answer:
       "No. Partner levels and preferential commercial terms are reviewed individually based on actual booking volume, frequency, payment reliability, operational cooperation and long-term business potential — enquiry volume alone does not guarantee preferential pricing or credit terms.",
+  },
+  {
+    question: "Do I get B2B access immediately after registration?",
+    answer:
+      "No. Registration is an application. Vertex reviews the business details and may request additional verification before activating partner access.",
+  },
+  {
+    question: "Can I share Vertex B2B rates with other agencies?",
+    answer:
+      "No. Partner-only rates, quotations and other confidential commercial information are intended for the approved partner's legitimate business use and must not be redistributed or disclosed to unauthorized third parties.",
+  },
+  {
+    question: "What happens if B2B resources are misused?",
+    answer:
+      "Vertex may restrict or terminate partner access and may take other appropriate action where confidential pricing, itineraries, intellectual property or other partner resources are misused.",
   },
 ];
 
@@ -339,21 +365,16 @@ export default async function B2bTravelPartnerProgramPage() {
           travel companies.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
-          <a
-            href={quoteWaHref}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 text-sm font-bold text-primary-foreground transition hover:brightness-110"
-          >
-            Request B2B Quotation
+          <B2bRegisterButton className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 text-sm font-bold text-primary-foreground transition hover:brightness-110">
+            Register as a B2B Partner
             <ArrowRight className="h-4 w-4" strokeWidth={2.4} />
-          </a>
-          <a
-            href="#b2b-contact"
+          </B2bRegisterButton>
+          <B2bWhatsAppLink
+            href={talkWaHref}
             className="glass inline-flex items-center gap-2 rounded-full px-7 py-3.5 text-sm font-semibold text-white transition hover:bg-white/15"
           >
             Talk to Our B2B Team
-          </a>
+          </B2bWhatsAppLink>
         </div>
       </SecondaryHero>
 
@@ -533,6 +554,23 @@ export default async function B2bTravelPartnerProgramPage() {
             White-label use does not transfer ownership of Vertex&apos;s intellectual property,
             itinerary templates, operational systems or supplier relationships.
           </p>
+
+          <div className="mt-8 flex items-start gap-4 rounded-2xl border border-primary/25 bg-primary/5 p-6 sm:p-7">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary/15 text-primary">
+              <Lock className="h-5 w-5" strokeWidth={2} />
+            </div>
+            <div>
+              <p className="text-[13px] font-bold uppercase tracking-wide text-primary">
+                Earned Privilege
+              </p>
+              <p className="mt-1.5 text-[14px] leading-relaxed text-foreground">
+                White-label access is an earned partner privilege. Agencies become eligible for
+                white-label customer-facing documents after a minimum of 3 completed bookings with
+                Vertex Kashmir Holidays, subject to payment history, genuine business activity,
+                responsible use of B2B information, and overall partner conduct.
+              </p>
+            </div>
+          </div>
         </section>
 
         {/* 4. Customer relationship */}
@@ -588,6 +626,23 @@ export default async function B2bTravelPartnerProgramPage() {
             long-term business potential. Registration or enquiry volume alone does not guarantee
             preferential pricing or credit terms.
           </p>
+
+          <div className="mx-auto mt-8 max-w-3xl rounded-2xl border border-border bg-muted p-6 sm:p-7">
+            <h3 className="text-[15px] font-bold text-foreground">
+              Built for Genuine Travel Partners
+            </h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
+              Our B2B program is designed for travel agencies, tour operators, DMCs and other
+              legitimate travel businesses serving real customers. Preferential commercial terms
+              are based on genuine business activity, booking history, payment reliability and
+              long-term partnership potential — not enquiry volume alone.
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
+              Repeated rate-only enquiries, fictitious requirements, unauthorized rate collection
+              or misuse of partner-only information may result in restricted or terminated B2B
+              access.
+            </p>
+          </div>
         </section>
 
         {/* 6b. How to become a partner */}
@@ -613,6 +668,53 @@ export default async function B2bTravelPartnerProgramPage() {
             Additional business verification may be requested where appropriate, especially for
             new or international partners.
           </p>
+          <div className="mt-8 flex justify-center">
+            <B2bRegisterButton className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 text-sm font-bold text-primary-foreground transition hover:brightness-110">
+              Register as a B2B Partner
+              <ArrowRight className="h-4 w-4" strokeWidth={2.4} />
+            </B2bRegisterButton>
+          </div>
+        </section>
+
+        {/* 6c. Intro video */}
+        <section className="mt-16 border-t border-border pt-14 sm:mt-20 sm:pt-16">
+          <SectionHeading kicker="WATCH" title="See Vertex Kashmir Holidays in Action" />
+          <p className="mx-auto mt-4 max-w-2xl text-center text-[14px] leading-relaxed text-muted-foreground">
+            A quick look at how we work as your Kashmir DMC and ground handling partner.
+          </p>
+          <div className="mt-8">
+            <B2bYoutubeEmbed videoId={B2B_VIDEO_ID} title={B2B_VIDEO_TITLE} />
+          </div>
+        </section>
+
+        {/* 6d. Registration CTA */}
+        <section className="mt-16 border-t border-border pt-14 sm:mt-20 sm:pt-16">
+          <SectionHeading kicker="APPLY NOW" title="Register as a B2B Partner" />
+          <p className="mx-auto mt-4 max-w-2xl text-center text-[14px] leading-relaxed text-muted-foreground">
+            Submit your agency details and our B2B team will review your application. Once
+            approved, we&apos;ll work with you on your Kashmir requirements, quotations and
+            bookings.
+          </p>
+          <div className="mx-auto mt-8 flex max-w-3xl flex-wrap items-center justify-center gap-x-2 gap-y-2 text-[12px] font-bold text-muted-foreground">
+            {["Register", "Application Review", "Partner Approval", "B2B Business Begins"].map(
+              (step, i, arr) => (
+                <span key={step} className="flex items-center gap-2">
+                  <span className="rounded-full border border-border bg-card px-3.5 py-1.5 text-foreground">
+                    {step}
+                  </span>
+                  {i < arr.length - 1 && (
+                    <ArrowRight className="h-3.5 w-3.5 text-primary" strokeWidth={2.4} />
+                  )}
+                </span>
+              ),
+            )}
+          </div>
+          <div className="mt-8 flex justify-center">
+            <B2bRegisterButton className="inline-flex items-center gap-2 rounded-full bg-primary px-8 py-4 text-[15px] font-bold text-primary-foreground shadow-card transition hover:brightness-110">
+              Start Your Application
+              <ArrowRight className="h-4 w-4" strokeWidth={2.4} />
+            </B2bRegisterButton>
+          </div>
         </section>
 
         {/* 7. Booking workflow */}
@@ -631,6 +733,61 @@ export default async function B2bTravelPartnerProgramPage() {
                 <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted-foreground">
                   {step.body}
                 </p>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {/* 7b. Structured B2B management */}
+        <section className="mt-16 border-t border-border pt-14 sm:mt-20 sm:pt-16">
+          <SectionHeading kicker="HOW WE OPERATE" title="Structured B2B Management" />
+          <p className="mx-auto mt-4 max-w-2xl text-center text-[14px] leading-relaxed text-muted-foreground">
+            From your initial enquiry and customized itinerary to quotation, booking and travel
+            coordination, our team manages your requirements through a structured system so your
+            requests stay organized and easy to track.
+          </p>
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              { icon: ClipboardList, label: "Enquiry & Requirement Management" },
+              { icon: FileCheck2, label: "Customized Itinerary & Quotation" },
+              { icon: FolderCog, label: "Booking & Document Management" },
+              { icon: Headset, label: "Dedicated B2B Coordination" },
+            ].map((f) => {
+              const Icon = f.icon;
+              return (
+                <div
+                  key={f.label}
+                  className="flex items-start gap-2.5 rounded-2xl border border-border bg-card p-5 shadow-card"
+                >
+                  <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" strokeWidth={1.9} />
+                  <p className="text-[13px] font-semibold text-foreground">{f.label}</p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* 7c. Customized itinerary process */}
+        <section className="mt-16 border-t border-border pt-14 sm:mt-20 sm:pt-16">
+          <SectionHeading
+            kicker="FOR YOUR CLIENTS"
+            title="Need a Customized Kashmir Package for Your Client?"
+          />
+          <ol className="mx-auto mt-10 grid max-w-3xl gap-4 sm:grid-cols-2">
+            {[
+              "Send us your client's requirements.",
+              "Our team prepares a customized itinerary and quotation.",
+              "We refine it with you until it fits your customer's requirements.",
+              "Once approved, we proceed with the booking process.",
+            ].map((step, i) => (
+              <li
+                key={step}
+                className="flex items-start gap-3 rounded-2xl border border-border bg-card p-5 shadow-card"
+              >
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-primary text-[12px] font-bold text-primary-foreground">
+                  {i + 1}
+                </span>
+                <p className="text-[13.5px] leading-relaxed text-foreground">{step}</p>
               </li>
             ))}
           </ol>
@@ -661,6 +818,44 @@ export default async function B2bTravelPartnerProgramPage() {
               </li>
             ))}
           </ul>
+        </section>
+
+        {/* 8c. Confidentiality & responsible use */}
+        <section
+          id="b2b-confidentiality"
+          className="mt-16 scroll-mt-24 border-t border-border pt-14 sm:mt-20 sm:pt-16"
+        >
+          <SectionHeading kicker="RESPONSIBLE USE" title="B2B Rates &amp; Resources — Confidential Use" />
+          <p className="mx-auto mt-4 max-w-2xl text-center text-[14px] leading-relaxed text-muted-foreground">
+            Vertex B2B rates, quotations, itinerary materials and partner-only resources are
+            provided exclusively for legitimate business use by approved partners.
+          </p>
+          <div className="mx-auto mt-8 max-w-3xl rounded-2xl border border-border bg-card p-6 shadow-card sm:p-7">
+            <ul className="space-y-3">
+              {[
+                "B2B/net rates must not be publicly published or redistributed.",
+                "Partner-only rates must not be shared with competing agencies or unauthorized third parties.",
+                "Vertex itineraries, templates, PDFs, package structures, descriptions and other proprietary materials must not be copied, resold or commercially exploited outside the authorized partner relationship.",
+                "Partners must not create multiple accounts or submit fictitious/repeated enquiries primarily to collect or compare Vertex rates.",
+                "Partner credentials, where provided in future, must not be shared with unauthorized users.",
+              ].map((rule) => (
+                <li key={rule} className="flex items-start gap-2.5 text-[13.5px] leading-relaxed text-muted-foreground">
+                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={2} />
+                  {rule}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-5 flex items-start gap-2.5 rounded-xl bg-muted p-4 text-[13px] leading-relaxed text-foreground">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-primary" strokeWidth={2} />
+              <p>
+                Vertex reserves the right to restrict, suspend or terminate B2B access, quotations
+                or preferential commercial terms where partner resources are misused. Where misuse
+                involves unauthorized disclosure, copying, commercial exploitation or infringement
+                of Vertex&apos;s rights, Vertex reserves all rights and remedies available under
+                applicable law.
+              </p>
+            </div>
+          </div>
         </section>
 
         {/* 8b. What to include in an enquiry */}
@@ -722,24 +917,26 @@ export default async function B2bTravelPartnerProgramPage() {
           </p>
 
           <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-            <a
+            <B2bWhatsAppLink
               href={quoteWaHref}
-              target="_blank"
-              rel="noopener noreferrer"
               className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 text-sm font-bold text-primary-foreground transition hover:brightness-110"
             >
               Request B2B Quotation
               <ArrowRight className="h-4 w-4" strokeWidth={2.4} />
-            </a>
-            <a
+            </B2bWhatsAppLink>
+            <B2bWhatsAppLink
               href={talkWaHref}
-              target="_blank"
-              rel="noopener noreferrer"
               className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-7 py-3.5 text-sm font-semibold text-foreground transition hover:bg-background"
             >
               Talk to Our B2B Team
-            </a>
+            </B2bWhatsAppLink>
           </div>
+          <p className="mt-4 text-[13px] text-muted-foreground">
+            New here?{" "}
+            <B2bRegisterButton className="font-semibold text-primary hover:underline">
+              Register as a B2B Partner
+            </B2bRegisterButton>
+          </p>
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-[14px]">
             {whatsapp && (
@@ -771,6 +968,8 @@ export default async function B2bTravelPartnerProgramPage() {
           </div>
         </section>
       </main>
+
+      <B2bRegisterModal />
     </div>
   );
 }

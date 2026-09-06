@@ -118,6 +118,12 @@ const nextConfig: NextConfig = {
         hostname: "res.cloudinary.com",
         pathname: "/**",
       },
+      {
+        // YouTube thumbnail images (B2B intro video embed's click-to-play poster).
+        protocol: "https",
+        hostname: "i.ytimg.com",
+        pathname: "/**",
+      },
     ],
     qualities: [60, 75, 85],
   },

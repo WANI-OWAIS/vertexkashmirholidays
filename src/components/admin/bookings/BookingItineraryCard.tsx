@@ -10,6 +10,12 @@ interface BookingItineraryCardProps {
   bookingId: string;
   servicesLocked: boolean;
   isLeadConverted: boolean;
+  /** The converted lead is a B2B request — the itinerary lives under the
+   *  dedicated B2B editor (/admin/b2b-itineraries), never the normal one:
+   *  that route explicitly 404s for a B2B-linked itinerary (see
+   *  api/itineraries/[id]/route.ts), and only the B2B editor knows how to
+   *  export the agent-branded quotation PDF. */
+  isB2bLead: boolean;
   leadItineraryId: string | null;
   itinerary: { id: string; status: string } | null;
   /** Server checks `itinerary:create` (not `bookings:edit`) for this action. */
@@ -25,6 +31,7 @@ export function BookingItineraryCard({
   bookingId,
   servicesLocked,
   isLeadConverted,
+  isB2bLead,
   leadItineraryId,
   itinerary,
   canCreate,
@@ -61,7 +68,7 @@ export function BookingItineraryCard({
           </p>
           {leadItineraryId ? (
             <Link
-              href={`/admin/itinerary/${leadItineraryId}`}
+              href={`${isB2bLead ? "/admin/b2b-itineraries" : "/admin/itinerary"}/${leadItineraryId}`}
               target="_blank"
               rel="noopener noreferrer"
               className={linkClass}

@@ -176,32 +176,58 @@ const s = StyleSheet.create({
   },
   footerCompany: { fontSize: 8.5, fontFamily: "Helvetica-Bold", color: C.green },
   footerLine: { fontSize: 7.5, color: C.muted, marginTop: 2, textAlign: "center" },
+  poweredBy: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 4 },
+  poweredByIcon: { width: 9, height: 9 },
+  poweredByText: { fontSize: 6.5, color: C.muted },
 });
 
 // Exported so other document families (e.g. the salary slip) can reuse the
 // same header/footer/meta-cell shell instead of redefining it.
 export { s as sharedPdfStyles };
 
+// B2B agent branding — when present, Header/Footer render the agent's own
+// identity instead of Vertex's, so a B2B booking's invoice/receipt reads as
+// coming from the partner agency the guest actually booked through (same
+// white-label treatment as B2bItineraryPdf.tsx). Every other caller (normal
+// customer bookings, the salary slip) omits this and gets the Vertex-branded
+// shell unchanged.
+export interface InvoiceAgentBranding {
+  agencyName: string | null;
+  /** Already a data: URI — agents upload PNG logos as base64, stored as-is. */
+  agencyLogoUrl: string | null;
+  phone: string | null;
+  email: string;
+}
+
 export function Header({
   logo,
   title,
   ref: docRef,
+  agent,
 }: {
   logo: string | null;
   title: string;
   ref: string;
+  agent?: InvoiceAgentBranding | null;
 }) {
+  const brandLogo = agent ? agent.agencyLogoUrl : logo;
   return (
     <View style={s.header}>
       <View style={s.brandRow}>
-        {logo ? (
+        {brandLogo ? (
           <View style={s.logoBox}>
-            <Image src={logo} style={s.logoImg} />
+            <Image src={brandLogo} style={s.logoImg} />
           </View>
         ) : null}
         <View>
-          <Text style={s.brandName}>Vertex Kashmir</Text>
-          <Text style={s.brandSub}>HOLIDAYS</Text>
+          {agent ? (
+            <Text style={s.brandName}>{agent.agencyName ?? "Travel Partner"}</Text>
+          ) : (
+            <>
+              <Text style={s.brandName}>Vertex Kashmir</Text>
+              <Text style={s.brandSub}>HOLIDAYS</Text>
+            </>
+          )}
         </View>
       </View>
       <View style={s.docMeta}>
@@ -215,12 +241,39 @@ export function Header({
 export function Footer({
   address,
   gstNumber,
+  agent,
+  whiteLabel = true,
+  vertexIcon,
 }: {
   address: string;
   /** SiteSettings.gstNumber — the same GSTIN shown in the site footer. Omitted
    *  on internal documents (e.g. the salary slip) and when it isn't configured. */
   gstNumber?: string | null;
+  agent?: InvoiceAgentBranding | null;
+  /** Agent-branded documents only — false once the agency hasn't yet earned
+   *  full white-label (see WHITE_LABEL_MIN_BOOKINGS), adding a small
+   *  "Powered by Vertex Kashmir Holidays" credit below the agent's own
+   *  details. Ignored when `agent` is absent (never shown on Vertex's own
+   *  documents — there's nothing to credit there). */
+  whiteLabel?: boolean;
+  /** Vertex's small square icon mark, as a data: URI — only needed (and only
+   *  fetched by the caller) when `whiteLabel` is false. */
+  vertexIcon?: string | null;
 }) {
+  if (agent) {
+    return (
+      <View style={s.footer} fixed>
+        <Text style={s.footerCompany}>{agent.agencyName ?? "Travel Partner"}</Text>
+        <Text style={s.footerLine}>{[agent.phone, agent.email].filter(Boolean).join(" · ")}</Text>
+        {!whiteLabel && (
+          <View style={s.poweredBy}>
+            {vertexIcon ? <Image src={vertexIcon} style={s.poweredByIcon} /> : null}
+            <Text style={s.poweredByText}>Powered by Vertex Kashmir Holidays</Text>
+          </View>
+        )}
+      </View>
+    );
+  }
   return (
     <View style={s.footer} fixed>
       <Text style={s.footerCompany}>{CONTACT.company}</Text>
@@ -252,6 +305,9 @@ export function BookingSummaryPdf({
   logo,
   address,
   gstNumber,
+  agent,
+  whiteLabel,
+  vertexIcon,
 }: {
   data: BookingSummaryPdfData;
   logo: string | null;
@@ -260,13 +316,21 @@ export function BookingSummaryPdf({
   /** SiteSettings.gstNumber, rendered in the footer next to the tourism
    *  registration number. Null/absent when it isn't configured. */
   gstNumber?: string | null;
+  /** B2B booking — white-labels this document to the agent instead of Vertex. */
+  agent?: InvoiceAgentBranding | null;
+  /** See Footer's own doc comment — ignored unless `agent` is set. */
+  whiteLabel?: boolean;
+  vertexIcon?: string | null;
 }) {
   const grouped = groupServiceTables(data.services);
 
   return (
-    <Document title={`Booking Summary - ${data.bookingRef}`} author={CONTACT.brand}>
+    <Document
+      title={`Booking Summary - ${data.bookingRef}`}
+      author={agent?.agencyName ?? CONTACT.brand}
+    >
       <Page size="A4" style={s.page}>
-        <Header logo={logo} title="BOOKING SUMMARY" ref={`Ref: ${data.bookingRef}`} />
+        <Header logo={logo} title="BOOKING SUMMARY" ref={`Ref: ${data.bookingRef}`} agent={agent} />
 
         <View style={s.metaGrid}>
           <MetaCell label="Guest" value={data.guestName} />
@@ -356,7 +420,13 @@ export function BookingSummaryPdf({
           to availability at the time of travel. This is a computer-generated summary.
         </Text>
 
-        <Footer address={address} gstNumber={gstNumber} />
+        <Footer
+          address={address}
+          gstNumber={gstNumber}
+          agent={agent}
+          whiteLabel={whiteLabel}
+          vertexIcon={vertexIcon}
+        />
       </Page>
     </Document>
   );
@@ -368,6 +438,9 @@ export function PaymentInvoicePdf({
   logo,
   address,
   gstNumber,
+  agent,
+  whiteLabel,
+  vertexIcon,
 }: {
   data: PaymentInvoicePdfData;
   logo: string | null;
@@ -376,11 +449,19 @@ export function PaymentInvoicePdf({
   /** SiteSettings.gstNumber, rendered in the footer next to the tourism
    *  registration number. Null/absent when it isn't configured. */
   gstNumber?: string | null;
+  /** B2B booking — white-labels this document to the agent instead of Vertex. */
+  agent?: InvoiceAgentBranding | null;
+  /** See Footer's own doc comment — ignored unless `agent` is set. */
+  whiteLabel?: boolean;
+  vertexIcon?: string | null;
 }) {
   return (
-    <Document title={`Payment Receipt - ${data.invoiceRef}`} author={CONTACT.brand}>
+    <Document
+      title={`Payment Receipt - ${data.invoiceRef}`}
+      author={agent?.agencyName ?? CONTACT.brand}
+    >
       <Page size="A4" style={s.page}>
-        <Header logo={logo} title="PAYMENT RECEIPT" ref={`Receipt: ${data.invoiceRef}`} />
+        <Header logo={logo} title="PAYMENT RECEIPT" ref={`Receipt: ${data.invoiceRef}`} agent={agent} />
 
         <View style={s.metaGrid}>
           <MetaCell label="Customer" value={data.customerName} />
@@ -418,7 +499,13 @@ export function PaymentInvoicePdf({
           computer-generated receipt.
         </Text>
 
-        <Footer address={address} gstNumber={gstNumber} />
+        <Footer
+          address={address}
+          gstNumber={gstNumber}
+          agent={agent}
+          whiteLabel={whiteLabel}
+          vertexIcon={vertexIcon}
+        />
       </Page>
     </Document>
   );

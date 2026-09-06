@@ -42,6 +42,10 @@ import {
   Wallet,
   CalendarOff,
   BedDouble,
+  Handshake,
+  ClipboardList,
+  CalendarCheck2,
+  Layers,
   type LucideIcon,
 } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
@@ -65,8 +69,11 @@ const MODULE_ICONS: Record<ModuleKey, LucideIcon> = {
   bookings: CalendarDays,
   leads: Inbox,
   itinerary: Map,
+  proposals: Layers,
   hotelSuppliers: BedDouble,
   users: Users,
+  b2bAgents: Handshake,
+  b2bRequests: ClipboardList,
   employees: UserCog,
   salary: Wallet,
   leave: CalendarOff,
@@ -89,17 +96,41 @@ const MODULE_ICONS: Record<ModuleKey, LucideIcon> = {
   careers: Briefcase,
 };
 
-const PAGE_TITLES: Record<string, string> = Object.fromEntries(
-  MODULES.map((m) => [m.href, m.label]),
-);
+const PAGE_TITLES: Record<string, string> = {
+  ...Object.fromEntries(MODULES.map((m) => [m.href, m.label])),
+  "/admin/b2b-bookings": "B2B Bookings",
+};
 
 // Sidebar section grouping — purely a display concern, layered on top of the
 // flat MODULES/permission system. `label: null` renders its items with no
 // section header (Dashboard/Connect up top).
-const NAV_GROUPS: { label: string | null; keys: ModuleKey[] }[] = [
+//
+// `extra` items are static nav links with no MODULES entry of their own —
+// they're a filtered view of an existing module's data (e.g. B2B Bookings is
+// just Bookings scoped to B2B-originated rows), so they piggyback on that
+// module's own permission (`permKey`) instead of needing a new RBAC module +
+// RolePermission seed. Mirrors MODULE_PATH_ALIASES in moduleGuard.tsx, which
+// applies the same reuse for the actual page-view guard.
+interface ExtraNavItem {
+  href: string;
+  label: string;
+  Icon: LucideIcon;
+  permKey: ModuleKey;
+}
+const NAV_GROUPS: { label: string | null; keys: ModuleKey[]; extra?: ExtraNavItem[] }[] = [
   { label: null, keys: ["dashboard", "connect"] },
   { label: "Catalog", keys: ["destinations", "packages", "activities", "campaigns"] },
-  { label: "CRM", keys: ["leads", "itinerary", "hotelSuppliers", "bookings", "users"] },
+  {
+    label: "CRM",
+    keys: ["leads", "itinerary", "proposals", "hotelSuppliers", "bookings", "users"],
+  },
+  {
+    label: "B2B",
+    keys: ["b2bAgents", "b2bRequests"],
+    extra: [
+      { href: "/admin/b2b-bookings", label: "B2B Bookings", Icon: CalendarCheck2, permKey: "bookings" },
+    ],
+  },
   { label: "Marketing", keys: ["offlineConversions"] },
   { label: "CMS", keys: ["home", "about", "contact", "legal", "banners", "galleries"] },
   { label: "Editorial", keys: ["blogs", "faqs", "seo", "reviews", "careers"] },
@@ -281,12 +312,17 @@ export function AdminShell({
   // A group is dropped entirely if none of its modules are visible to this role.
   const navGroups: NavGroup[] = NAV_GROUPS.map((group) => ({
     label: group.label,
-    items: group.keys
-      .filter((key) => permissions[key]?.view)
-      .map((key) => {
-        const mod = MODULES.find((m) => m.key === key)!;
-        return { href: mod.href, label: mod.label, Icon: MODULE_ICONS[key] };
-      }),
+    items: [
+      ...group.keys
+        .filter((key) => permissions[key]?.view)
+        .map((key) => {
+          const mod = MODULES.find((m) => m.key === key)!;
+          return { href: mod.href, label: mod.label, Icon: MODULE_ICONS[key] };
+        }),
+      ...(group.extra ?? [])
+        .filter((item) => permissions[item.permKey]?.view)
+        .map((item) => ({ href: item.href, label: item.label, Icon: item.Icon })),
+    ],
   })).filter((group) => group.items.length > 0);
 
   return (

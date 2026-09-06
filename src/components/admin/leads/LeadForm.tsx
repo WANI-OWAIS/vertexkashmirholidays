@@ -7,7 +7,22 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Loader2, ChevronDown, Lock, Check, X } from "lucide-react";
+import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
+import { PhoneInput } from "@/components/auth/PhoneInput";
+import { toE164 } from "@/lib/auth/validation";
+import { phoneField } from "@/lib/leads/schema";
 import { cn } from "@/lib/utils";
+
+/** Splits a saved E.164 number back into a country + national number to
+ * pre-fill the PhoneInput — same helper as BookingForm/B2bRequestForm. */
+function parseDefaultPhone(e164: string): { country: CountryCode; national: string } | null {
+  try {
+    const parsed = parsePhoneNumber(e164);
+    return parsed ? { country: parsed.country ?? "IN", national: parsed.nationalNumber } : null;
+  } catch {
+    return null;
+  }
+}
 
 // Presentational label only — mirrors the LeadSource enum's values for
 // display, not a re-derivation of the channel itself. The actual channel
@@ -30,7 +45,7 @@ type ResolveState = "idle" | "loading" | "resolved" | "error";
 const schema = z
   .object({
     name: z.string().min(1, "Name is required"),
-    phone: z.string().min(6, "Valid phone number required"),
+    phone: phoneField,
     email: z.string().email("Enter a valid email").optional().or(z.literal("")),
     source: z.string().optional(),
     category: z.string().optional(),
@@ -109,6 +124,19 @@ export function LeadForm({
     resolver: zodResolver(schema),
     defaultValues: defaultValues ?? { source: "MANUAL", adults: "1" },
   });
+
+  // Phone — country-aware input matching the public LeadForm/BookingForm,
+  // defaulting to India. Pre-fills from the lead's saved E.164 number in edit mode.
+  const defaultPhoneParsed = defaultValues?.phone ? parseDefaultPhone(defaultValues.phone) : null;
+  const [country, setCountry] = useState<CountryCode>(defaultPhoneParsed?.country ?? "IN");
+  const [national, setNational] = useState(defaultPhoneParsed?.national ?? "");
+
+  function syncPhone(nextNational: string, nextCountry: CountryCode) {
+    setNational(nextNational);
+    setCountry(nextCountry);
+    const e164 = toE164(nextNational, nextCountry);
+    setValue("phone", e164 ?? nextNational, { shouldValidate: true });
+  }
 
   // WhatsApp attribution reference — deliberately kept as separate local
   // state rather than a registered react-hook-form field: it has async
@@ -283,12 +311,14 @@ export function LeadForm({
                 <label className="block text-xs font-semibold text-muted-foreground mb-1">
                   Phone *
                 </label>
-                <input
-                  {...register("phone")}
-                  type="tel"
-                  className={inputCls}
-                  placeholder="+91 98765 43210"
+                <PhoneInput
+                  country={country}
+                  onCountryChange={(c) => syncPhone(national, c)}
+                  value={national}
+                  onChange={(v) => syncPhone(v, country)}
+                  invalid={!!errors.phone}
                 />
+                <input type="hidden" {...register("phone")} />
                 {errors.phone && (
                   <p className="text-[12px] text-red-500 dark:text-red-400 mt-1">
                     {errors.phone.message}

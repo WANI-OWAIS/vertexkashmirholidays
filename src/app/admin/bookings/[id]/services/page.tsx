@@ -56,6 +56,7 @@ export default async function BookingServicesPage({ params }: PageProps) {
           phone: true,
           email: true,
           endDate: true,
+          b2bAgentId: true,
           assignedTo: { select: { name: true, email: true } },
           itinerary: { select: { id: true } },
         },
@@ -176,6 +177,7 @@ export default async function BookingServicesPage({ params }: PageProps) {
             bookingId={booking.id}
             servicesLocked={booking.servicesLocked}
             isLeadConverted={!!lead}
+            isB2bLead={!!lead?.b2bAgentId}
             leadItineraryId={lead?.itinerary?.id ?? null}
             itinerary={booking.itinerary ?? null}
             canCreate={canCreateItinerary}

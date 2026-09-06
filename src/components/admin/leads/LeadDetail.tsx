@@ -29,6 +29,11 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+// IN_PROGRESS is a real LeadStatus value at the type level (it's a B2B-request
+// -only value — see prisma/schema.prisma), included here only so this type
+// structurally matches Prisma's Lead.status; this page excludes B2B rows
+// (see admin/leads/page.tsx, admin/leads/[id]/page.tsx) so it never actually
+// renders in practice.
 type LeadStatus =
   | "NEW"
   | "CONNECTED"
@@ -36,6 +41,7 @@ type LeadStatus =
   | "QUALIFIED"
   | "NEGOTIATION"
   | "ON_HOLD"
+  | "IN_PROGRESS"
   | "CONVERTED"
   | "REJECTED";
 type LeadSource = "WEBSITE" | "MANUAL" | "GOOGLE_ADS" | "META_ADS" | "THIRD_PARTY" | "REFERRAL";
@@ -101,6 +107,9 @@ interface Lead {
   startDate: Date | string | null;
   endDate: Date | string | null;
   notes: string | null;
+  // JSON-string array — currently only ever populated by the B2B registration
+  // form's logo (see parseLogoAttachment() in src/app/api/leads/route.ts).
+  attachments: string;
   followUpAt: Date | string | null;
   status: LeadStatus;
   locked: boolean;
@@ -163,6 +172,9 @@ const STATUS_STYLES: Record<LeadStatus, string> = {
   QUALIFIED: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
   NEGOTIATION: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
   ON_HOLD: "bg-muted text-muted-foreground",
+  // B2B-request-only value — never actually rendered here (see comment on the
+  // LeadStatus type above), present only so this Record type-checks.
+  IN_PROGRESS: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
   CONVERTED: "bg-green-500/15 text-green-700 dark:text-green-300",
   REJECTED: "bg-red-500/15 text-red-700 dark:text-red-300",
 };
@@ -253,6 +265,27 @@ const ATTRIBUTION_DISPLAY_FIELDS: { key: keyof Lead; label: string }[] = [
   { key: "landingPage", label: "Landing Page" },
 ];
 
+interface LeadAttachment {
+  label: string;
+  dataUrl: string;
+}
+
+// Only ever populated today by the B2B registration form's company logo
+// (parseLogoAttachment() in src/app/api/leads/route.ts) — tolerant of
+// malformed/legacy JSON since this column has no schema-level guarantee.
+function parseAttachments(raw: string): LeadAttachment[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (a): a is LeadAttachment =>
+        !!a && typeof a === "object" && typeof a.label === "string" && typeof a.dataUrl === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
 const selectCls =
   "w-full pl-3 pr-8 py-2 text-sm border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary transition bg-card appearance-none disabled:opacity-60";
 
@@ -271,6 +304,7 @@ export function LeadDetail({
   const locked = lead.locked;
   const itinerary = lead.itinerary;
   const populatedAttribution = ATTRIBUTION_DISPLAY_FIELDS.filter(({ key }) => lead[key]);
+  const attachments = parseAttachments(lead.attachments);
   const [showConvert, setShowConvert] = useState(false);
   const [status, setStatus] = useState<LeadStatus>(lead.status);
   const [assignedToId, setAssignedToId] = useState(lead.assignedToId ?? "");
@@ -698,6 +732,28 @@ export function LeadDetail({
               </div>
             </div>
           </div>
+
+          {/* Attachments — currently only the B2B registration form's company logo. */}
+          {attachments.length > 0 && (
+            <div className="bg-card rounded-2xl border border-border shadow-sm p-6">
+              <h3 className="font-bold text-foreground text-sm mb-4 flex items-center gap-2">
+                <Paperclip className="w-4 h-4" /> Attachments
+              </h3>
+              <div className="flex flex-wrap gap-4">
+                {attachments.map((a, i) => (
+                  <div key={i} className="flex items-center gap-2.5">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- tiny (<=5KB) stored data URI, not a remote asset next/image can optimize */}
+                    <img
+                      src={a.dataUrl}
+                      alt={a.label}
+                      className="h-12 w-12 rounded-lg border border-border object-contain bg-muted"
+                    />
+                    <span className="text-xs font-semibold text-foreground">{a.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Attribution — the raw signals deriveChannel() classified `source` from. */}
           <div className="bg-card rounded-2xl border border-border shadow-sm p-6">

@@ -8,8 +8,39 @@ import { renderToBuffer } from "@react-pdf/renderer";
 import { prisma } from "@/lib/prisma";
 import { computeBookingFinance, PAYMENT_STATUS_LABELS } from "@/lib/bookings/finance";
 import { loadLogoDataUrl } from "@/lib/pdf/assets";
-import { BookingSummaryPdf, PaymentInvoicePdf, type PdfService } from "@/lib/pdf/InvoiceDocuments";
+import {
+  BookingSummaryPdf,
+  PaymentInvoicePdf,
+  type PdfService,
+  type InvoiceAgentBranding,
+} from "@/lib/pdf/InvoiceDocuments";
 import { resolvePrimaryOffice } from "@/lib/companyOffice";
+import { isB2bAgentWhiteLabelEligible } from "@/lib/b2b/whiteLabelEligibility";
+
+/**
+ * A booking converted from a B2B request resolves its agent so the PDF can be
+ * branded to the agency instead of Vertex (see InvoiceDocuments.tsx's
+ * Header/Footer `agent` prop) — the same treatment already given to the
+ * itinerary quotation PDF. `whiteLabel` says whether the agency has earned
+ * *full* white-label (no Vertex mention at all) or is still below
+ * WHITE_LABEL_MIN_BOOKINGS, in which case the document stays co-branded (see
+ * `whiteLabel`/`vertexIcon` on Footer). Returns null for a normal direct/
+ * website booking, which keeps the Vertex-branded document unchanged.
+ */
+async function resolveB2bAgentBranding(
+  bookingId: string,
+): Promise<{ agent: InvoiceAgentBranding; whiteLabel: boolean } | null> {
+  const lead = await prisma.lead.findFirst({
+    where: { bookingId, b2bAgentId: { not: null } },
+    select: {
+      b2bAgentId: true,
+      b2bAgent: { select: { agencyName: true, agencyLogoUrl: true, phone: true, email: true } },
+    },
+  });
+  if (!lead?.b2bAgent || !lead.b2bAgentId) return null;
+  const whiteLabel = await isB2bAgentWhiteLabelEligible(lead.b2bAgentId);
+  return { agent: lead.b2bAgent, whiteLabel };
+}
 
 export const bookingRef = (id: string) => id.slice(-8).toUpperCase();
 
@@ -65,9 +96,10 @@ export async function renderBookingSummaryPdf(
     timing: s.timing,
   }));
   const ref = bookingRef(booking.id);
-  const [logo, settings] = await Promise.all([
+  const [logo, settings, branding] = await Promise.all([
     loadLogoDataUrl(),
     prisma.siteSettings.findUnique({ where: { id: "singleton" } }),
+    resolveB2bAgentBranding(booking.id),
   ]);
   const { address } = await resolvePrimaryOffice(settings);
   const buffer = await renderToBuffer(
@@ -75,6 +107,9 @@ export async function renderBookingSummaryPdf(
       logo={logo}
       address={address}
       gstNumber={settings?.gstNumber}
+      agent={branding?.agent}
+      whiteLabel={branding?.whiteLabel}
+      vertexIcon={logo}
       data={{
         bookingRef: ref,
         guestName: booking.guestName || booking.user?.name || "Guest",
@@ -117,9 +152,10 @@ export async function renderPaymentReceiptPdf(
 
   const ref = bookingRef(booking.id);
   const invoiceRef = payment.id.slice(-8).toUpperCase();
-  const [logo, settings] = await Promise.all([
+  const [logo, settings, branding] = await Promise.all([
     loadLogoDataUrl(),
     prisma.siteSettings.findUnique({ where: { id: "singleton" } }),
+    resolveB2bAgentBranding(booking.id),
   ]);
   const { address } = await resolvePrimaryOffice(settings);
   const buffer = await renderToBuffer(
@@ -127,6 +163,9 @@ export async function renderPaymentReceiptPdf(
       logo={logo}
       address={address}
       gstNumber={settings?.gstNumber}
+      agent={branding?.agent}
+      whiteLabel={branding?.whiteLabel}
+      vertexIcon={logo}
       data={{
         invoiceRef,
         bookingRef: ref,

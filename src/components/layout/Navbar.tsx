@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { User, Menu, X, Home, ShoppingBag, MapPin, type LucideIcon } from "lucide-react";
 import { WhatsAppIcon } from "@/components/icons/brand";
 import { trackWhatsappClick } from "@/lib/analytics";
+import { openB2bRegisterModal } from "@/lib/b2b/registerModal";
 
 export function Navbar() {
   const { siteName } = useSiteSettings();
@@ -97,6 +98,11 @@ export function Navbar() {
   // bar there to keep those CTAs visible and uncluttered.
   const isTourDetail = /^\/tours\/[^/]+$/.test(pathname);
 
+  // On the B2B page, the header's primary right-side CTA switches from the
+  // consumer "Plan My Trip" WhatsApp action to opening the B2B registration
+  // modal — every other route keeps "Plan My Trip" unchanged.
+  const isB2bPage = pathname === "/b2b-travel-partner-program";
+
   return (
     <>
       <header
@@ -166,16 +172,26 @@ export function Navbar() {
             >
               <User className="h-4 w-4" strokeWidth={2} />
             </Link>
-            <Link
-              href={planTripHref}
-              target="_blank"
-              onClick={() => trackWhatsappClick("header")}
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-[14px] font-bold text-primary-foreground shadow-glow ring-inner transition hover:brightness-110"
-            >
-              <WhatsAppIcon className="h-4 w-4" />
-              Plan My Trip
-            </Link>
+            {isB2bPage ? (
+              <button
+                type="button"
+                onClick={openB2bRegisterModal}
+                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-[14px] font-bold text-primary-foreground shadow-glow ring-inner transition hover:brightness-110"
+              >
+                Register as B2B Partner
+              </button>
+            ) : (
+              <Link
+                href={planTripHref}
+                target="_blank"
+                onClick={() => trackWhatsappClick("header")}
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-[14px] font-bold text-primary-foreground shadow-glow ring-inner transition hover:brightness-110"
+              >
+                <WhatsAppIcon className="h-4 w-4" />
+                Plan My Trip
+              </Link>
+            )}
           </div>
 
           {/* Mobile Top Bar - Only Theme Toggle */}
@@ -256,46 +272,79 @@ export function Navbar() {
             ease: "easeInOut",
           }}
         >
-          <Link
-            href={planTripHref}
-            target="_blank"
-            onClick={() => trackWhatsappClick("header_mobile")}
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 rounded-full bg-primary px-5 py-3 shadow-xl ring-inner transition hover:brightness-110"
-            style={{
-              boxShadow: "0 4px 20px rgba(0,0,0,0.2), 0 0 0 1px rgba(255,255,255,0.1) inset",
-            }}
-          >
-            <motion.div
-              animate={{ rotate: 360 }}
-              transition={{
-                duration: 8,
-                repeat: Infinity,
-                ease: "linear",
+          {isB2bPage ? (
+            <button
+              type="button"
+              onClick={openB2bRegisterModal}
+              className="flex items-center gap-2 rounded-full bg-primary px-5 py-3 shadow-xl ring-inner transition hover:brightness-110"
+              style={{
+                boxShadow: "0 4px 20px rgba(0,0,0,0.2), 0 0 0 1px rgba(255,255,255,0.1) inset",
               }}
             >
-              <WhatsAppIcon className="h-5 w-5" />
-            </motion.div>
-            <span className="text-sm font-bold text-primary-foreground">Plan My Trip</span>
+              <span className="text-sm font-bold text-primary-foreground">
+                Register as B2B Partner
+              </span>
 
-            {/* Pulse ring animation */}
-            <motion.span
-              className="absolute inset-0 rounded-full"
-              animate={{
-                scale: [1, 1.2, 1],
-                opacity: [0.6, 0, 0.6],
-              }}
-              transition={{
-                duration: 2,
-                repeat: Infinity,
-                ease: "easeInOut",
-              }}
+              {/* Pulse ring animation */}
+              <motion.span
+                className="absolute inset-0 rounded-full"
+                animate={{
+                  scale: [1, 1.2, 1],
+                  opacity: [0.6, 0, 0.6],
+                }}
+                transition={{
+                  duration: 2,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+                style={{
+                  border: "2px solid hsl(var(--primary))",
+                  borderRadius: "9999px",
+                }}
+              />
+            </button>
+          ) : (
+            <Link
+              href={planTripHref}
+              target="_blank"
+              onClick={() => trackWhatsappClick("header_mobile")}
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 rounded-full bg-primary px-5 py-3 shadow-xl ring-inner transition hover:brightness-110"
               style={{
-                border: "2px solid hsl(var(--primary))",
-                borderRadius: "9999px",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.2), 0 0 0 1px rgba(255,255,255,0.1) inset",
               }}
-            />
-          </Link>
+            >
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{
+                  duration: 8,
+                  repeat: Infinity,
+                  ease: "linear",
+                }}
+              >
+                <WhatsAppIcon className="h-5 w-5" />
+              </motion.div>
+              <span className="text-sm font-bold text-primary-foreground">Plan My Trip</span>
+
+              {/* Pulse ring animation */}
+              <motion.span
+                className="absolute inset-0 rounded-full"
+                animate={{
+                  scale: [1, 1.2, 1],
+                  opacity: [0.6, 0, 0.6],
+                }}
+                transition={{
+                  duration: 2,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+                style={{
+                  border: "2px solid hsl(var(--primary))",
+                  borderRadius: "9999px",
+                }}
+              />
+            </Link>
+          )}
         </motion.div>
       </motion.div>
 

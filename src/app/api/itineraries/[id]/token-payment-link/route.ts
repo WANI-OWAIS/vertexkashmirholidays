@@ -24,12 +24,16 @@ export async function POST(_req: NextRequest, { params }: Params) {
       ownerId: true,
       leadId: true,
       locked: true,
-      lead: { select: { assignedToId: true, locked: true } },
+      lead: { select: { assignedToId: true, locked: true, b2bAgentId: true } },
       bookingId: true,
       booking: { select: { servicesLocked: true } },
     },
   });
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // No booking/payment concept for B2B yet (later phase) — never mint a real
+  // payment link against a B2B itinerary.
+  if (!existing || existing.lead?.b2bAgentId != null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const access = resolveItineraryAccess(existing, { id: guard.user.id, role: guard.user.role });
   if (!access.canView) return NextResponse.json({ error: "Forbidden" }, { status: 403 });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { Role } from "@prisma/client";
+import { Prisma, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/permissions";
 
@@ -13,15 +13,31 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const search = searchParams.get("search")?.trim() ?? "";
+  // Optional role scope (e.g. "CUSTOMER" for the admin/users page, or a
+  // comma-separated staff-role list for admin/employees) — no filter when
+  // omitted, same as this endpoint's original unscoped behaviour.
+  const roleParam = searchParams.get("role")?.trim();
+  const roles = roleParam ? (roleParam.split(",").filter(Boolean) as Role[]) : undefined;
+  // Soft-deleted rows are excluded by default; includeDeleted=1 shows both,
+  // matching the admin list pages' "Show deleted" checkbox semantics.
+  const includeDeleted = searchParams.get("includeDeleted") === "1";
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1"));
-  const take = 20;
+  const take = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") ?? "20")));
   const skip = (page - 1) * take;
 
-  const where = search
-    ? {
-        OR: [{ name: { contains: search } }, { email: { contains: search } }],
-      }
-    : {};
+  const where: Prisma.UserWhereInput = {
+    ...(roles ? { role: { in: roles } } : {}),
+    ...(includeDeleted ? {} : { deletedAt: null }),
+    ...(search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" } },
+            { email: { contains: search, mode: "insensitive" } },
+            { phone: { contains: search } },
+          ],
+        }
+      : {}),
+  };
 
   const [users, total] = await Promise.all([
     prisma.user.findMany({
@@ -33,8 +49,11 @@ export async function GET(req: NextRequest) {
         id: true,
         name: true,
         email: true,
+        phone: true,
         role: true,
+        deletedAt: true,
         createdAt: true,
+        lastLoginAt: true,
         _count: { select: { bookings: true, reviews: true } },
       },
     }),

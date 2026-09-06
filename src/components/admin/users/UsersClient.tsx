@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Search, User, Pencil, Trash2, RotateCcw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { usePagination } from "@/components/admin/ui/usePagination";
 import { TablePagination } from "@/components/admin/ui/TablePagination";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/organisms/dialog";
 import { PasswordInput } from "@/components/ui/atoms/PasswordInput";
@@ -23,33 +22,86 @@ interface CustomerRow {
 
 interface Props {
   initialCustomers: CustomerRow[];
+  totalCount: number;
+  deletedCount: number;
 }
 
-export function UsersClient({ initialCustomers }: Props) {
+export function UsersClient({ initialCustomers, totalCount, deletedCount }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [showDeleted, setShowDeleted] = useState(false);
   const [editing, setEditing] = useState<CustomerRow | null>(null);
   const [deleting, setDeleting] = useState<CustomerRow | null>(null);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return initialCustomers.filter((u) => {
-      if (!showDeleted && u.deletedAt) return false;
-      if (q === "") return true;
-      return (
-        (u.name ?? "").toLowerCase().includes(q) ||
-        u.email.toLowerCase().includes(q) ||
-        (u.phone ?? "").toLowerCase().includes(q)
-      );
-    });
-  }, [initialCustomers, search, showDeleted]);
+  // Server-paginated: this list previously capped at the first 200 rows
+  // (fetched once, filtered/paginated in the browser), silently hiding
+  // anything older and making search unable to find records beyond that
+  // snapshot. This now calls the already-existing, correctly paginated
+  // /api/users endpoint for every page/search/filter change — the initial
+  // page still renders instantly from the server-fetched props below, no
+  // fetch needed on first paint. `deletedCount` is a prop, not local state:
+  // it only ever changes via a delete/restore mutation, which already calls
+  // router.refresh() below to bring it (and every other server-computed
+  // figure) back in sync.
+  const [customers, setCustomers] = useState(initialCustomers);
+  const [total, setTotal] = useState(totalCount);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [loading, setLoading] = useState(false);
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const hasMounted = useRef(false);
 
-  const { page, setPage, pageSize, changePageSize, pageCount, total, pageItems } =
-    usePagination(filtered);
+  // Debounce search input — avoids a network round trip on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  const deletedCount = initialCustomers.filter((u) => u.deletedAt).length;
+  // Any filter change should jump back to page 1, same as the old client-side
+  // pagination's auto-clamp when the filtered set shrank.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, showDeleted]);
+
+  async function fetchCustomers() {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        role: "CUSTOMER",
+        page: String(page),
+        pageSize: String(pageSize),
+      });
+      if (debouncedSearch) params.set("search", debouncedSearch);
+      if (showDeleted) params.set("includeDeleted", "1");
+      const res = await fetch(`/api/users?${params.toString()}`);
+      if (!res.ok) throw new Error();
+      const data = (await res.json()) as { users: CustomerRow[]; total: number };
+      setCustomers(data.users);
+      setTotal(data.total);
+    } catch {
+      toast.error("Failed to load customers.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // Skip the redundant fetch on first mount — initialCustomers/totalCount
+    // already came from the server render.
+    if (!hasMounted.current) {
+      hasMounted.current = true;
+      return;
+    }
+    fetchCustomers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, showDeleted]);
+
+  function changePageSize(n: number) {
+    setPageSize(n);
+    setPage(1);
+  }
 
   function runAction(label: string, fn: () => Promise<Response>) {
     startTransition(async () => {
@@ -62,6 +114,7 @@ export function UsersClient({ initialCustomers }: Props) {
         toast.success(`${label} succeeded.`);
         setEditing(null);
         router.refresh();
+        fetchCustomers();
       } catch (err) {
         toast.error(err instanceof Error && err.message ? err.message : `${label} failed.`);
       }
@@ -107,9 +160,7 @@ export function UsersClient({ initialCustomers }: Props) {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="font-display font-extrabold text-foreground text-xl">Customers</h2>
-          <p className="text-muted-foreground text-xs mt-0.5">
-            {initialCustomers.length} customers
-          </p>
+          <p className="text-muted-foreground text-xs mt-0.5">{total} customers</p>
         </div>
       </div>
 
@@ -135,11 +186,11 @@ export function UsersClient({ initialCustomers }: Props) {
             Show deleted{deletedCount > 0 ? ` (${deletedCount})` : ""}
           </label>
           <p className="text-xs text-muted-foreground self-center shrink-0">
-            {filtered.length} results
+            {total} results{loading ? " · loading…" : ""}
           </p>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className={cn("overflow-x-auto", loading && "opacity-60 pointer-events-none")}>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-muted border-t border-b border-border">
@@ -154,14 +205,14 @@ export function UsersClient({ initialCustomers }: Props) {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {filtered.length === 0 ? (
+              {customers.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground text-sm">
                     No customers found.
                   </td>
                 </tr>
               ) : (
-                pageItems.map((u) => {
+                customers.map((u) => {
                   const isDeleted = !!u.deletedAt;
                   return (
                     <tr

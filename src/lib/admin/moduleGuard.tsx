@@ -31,6 +31,18 @@ export async function requireModuleView(module: ModuleKey): Promise<ModuleGuardR
 const MODULE_PATH_ALIASES: Record<string, ModuleKey> = {
   "/admin/blog-categories": "blogs",
   "/admin/faq-categories": "faqs",
+  // B2B Bookings is a filtered view of the same Booking data the main
+  // Bookings module manages, not a separate resource — see
+  // src/app/admin/b2b-bookings/page.tsx.
+  "/admin/b2b-bookings": "bookings",
+  // B2B itinerary editor — the href is "/admin/b2b-itineraries", which does
+  // not start with the "itinerary" module's own href ("/admin/itinerary"),
+  // so it was never resolvable and this route-level guard denied everyone
+  // (including SUPERADMIN — resolveModuleForPath returning null makes the
+  // admin layout's `allowed` check false regardless of role/permissions).
+  // The page itself already gates on the "itinerary" permission; this alias
+  // makes the outer layout guard agree instead of contradicting it.
+  "/admin/b2b-itineraries": "itinerary",
 };
 
 /**

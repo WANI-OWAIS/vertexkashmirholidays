@@ -26,7 +26,12 @@ export async function GET() {
 
   const [leads, bookings] = await Promise.all([
     prisma.lead.findMany({
-      where: admin ? { itinerary: null } : { itinerary: null, assignedToId: guard.user.id },
+      // B2B requests (b2bAgentId set) are never a valid link target here —
+      // see /api/admin/b2b-requests/[id]/itinerary for how their itinerary
+      // gets created instead.
+      where: admin
+        ? { itinerary: null, b2bAgentId: null }
+        : { itinerary: null, b2bAgentId: null, assignedToId: guard.user.id },
       select: { id: true, name: true, phone: true, email: true },
       orderBy: { createdAt: "desc" },
       take: 100,

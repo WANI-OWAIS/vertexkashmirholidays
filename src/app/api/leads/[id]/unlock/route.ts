@@ -16,8 +16,14 @@ export async function POST(_req: NextRequest, { params }: Params) {
   }
   const { id } = await params;
 
-  const lead = await prisma.lead.findUnique({ where: { id }, select: { id: true, locked: true } });
-  if (!lead) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const lead = await prisma.lead.findUnique({
+    where: { id },
+    select: { id: true, locked: true, b2bAgentId: true },
+  });
+  // B2B requests are managed exclusively via /api/admin/b2b-requests.
+  if (!lead || lead.b2bAgentId !== null) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
   if (!lead.locked) return NextResponse.json({ ok: true });
 
   await prisma.$transaction([

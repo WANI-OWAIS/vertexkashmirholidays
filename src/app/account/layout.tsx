@@ -39,6 +39,7 @@ export default async function AccountLayout({ children }: { children: React.Reac
         <AccountShell
           userName={session.user.name ?? "Traveller"}
           userEmail={session.user.email ?? ""}
+          isB2bAgent={session.user.agencyStatus !== null}
         >
           {children}
         </AccountShell>
